@@ -20,6 +20,8 @@ interface PlayerPoints {
     biggestHitAwards: number
     topKiller: boolean
     bestBomber: boolean
+    sideBoss1Wins?: number
+    sideBoss2Wins?: number
   }
   breakdown: string[]
 }
@@ -67,14 +69,14 @@ export default function VOTLWPage({ selectedGuild, selectedSeason }: VOTLWPagePr
     
     try {
       // Get all battle data for the season
-const { data: allBattleData } = await supabase
-  .from('EOT_GR_data')
-  .select('*')
-  .eq('Guild', selectedGuild)
-  .eq('Season', selectedSeason)
-  .eq('damageType', 'Battle')
-  .eq('rarity', 'Legendary')     // ✅ ADD THIS LINE
-  .gte('tier', 4)                // ✅ ADD THIS LINE
+      const { data: allBattleData } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')     // ✅ ADD THIS LINE
+        .gte('tier', 4)                // ✅ ADD THIS LINE
 
       // Get bomb data
       const { data: bombData } = await supabase
@@ -89,8 +91,8 @@ const { data: allBattleData } = await supabase
         const lastHitData = allBattleData.filter(entry => isLastHit(entry))
         const battleData = allBattleData.filter(entry => !isLastHit(entry))
 
-        // Calculate season-wide awards first
-        const seasonResults = calculateSeasonAwards(lastHitData, bombData)
+        // Calculate season-wide awards first - Fix the null issue
+        const seasonResults = calculateSeasonAwards(lastHitData, bombData || [])
         
         // Calculate set-by-set winners
         const setResults = calculateSetWinners(battleData)
@@ -318,13 +320,13 @@ const { data: allBattleData } = await supabase
       
       if (set.sideBoss1 && playerPoints[set.sideBoss1]) {
         playerPoints[set.sideBoss1].totalPoints += 2
-        playerPoints[set.sideBoss1].awards.sideBoss1Wins += 1
+        playerPoints[set.sideBoss1].awards.sideBoss1Wins! += 1
         playerPoints[set.sideBoss1].breakdown.push(`${setName} Side Boss 1 (2pts)`)
       }
       
       if (set.sideBoss2 && playerPoints[set.sideBoss2]) {
         playerPoints[set.sideBoss2].totalPoints += 2
-        playerPoints[set.sideBoss2].awards.sideBoss2Wins += 1
+        playerPoints[set.sideBoss2].awards.sideBoss2Wins! += 1
         playerPoints[set.sideBoss2].breakdown.push(`${setName} Side Boss 2 (2pts)`)
       }
       
@@ -387,136 +389,81 @@ const { data: allBattleData } = await supabase
       </div>
 
       {/* Season Awards */}
-      <div className="bg-white rounded-lg p-4 shadow-sm">
+      <div className="bg-white rounded-lg p-4 shadow">
         <h3 className="font-semibold mb-3">Season Awards</h3>
         <div className="space-y-2">
-          <div className="flex justify-between items-center p-2 bg-red-50 rounded">
-            <span className="text-sm font-medium">⚔️ Top Killer</span>
-            <div className="text-right">
-              <div className="font-semibold">{seasonAwards.topKiller.player}</div>
-              <div className="text-sm text-gray-600">{seasonAwards.topKiller.value} kills</div>
-            </div>
+          <div className="flex justify-between">
+            <span>🔪 Top Killer:</span>
+            <span className="font-medium">{seasonAwards.topKiller.player} ({seasonAwards.topKiller.value} kills)</span>
           </div>
-          <div className="flex justify-between items-center p-2 bg-orange-50 rounded">
-            <span className="text-sm font-medium">💣 Best Bomber</span>
-            <div className="text-right">
-              <div className="font-semibold">{seasonAwards.bestBomber.player}</div>
-              <div className="text-sm text-gray-600">{(seasonAwards.bestBomber.value / 1000000).toFixed(2)}M</div>
-            </div>
+          <div className="flex justify-between">
+            <span>💣 Best Bomber:</span>
+            <span className="font-medium">{seasonAwards.bestBomber.player} ({(seasonAwards.bestBomber.value / 1000000).toFixed(1)}M dmg)</span>
           </div>
         </div>
       </div>
 
-      {/* Leaderboard */}
-      <div className="bg-white rounded-lg p-4 shadow-sm">
-        <h3 className="font-semibold mb-3">Final Standings</h3>
+      {/* Player Rankings */}
+      <div className="bg-white rounded-lg p-4 shadow">
+        <h3 className="font-semibold mb-3">Player Rankings</h3>
         <div className="space-y-3">
           {playerPoints.slice(0, 10).map((player, index) => (
-            <div key={player.displayName} className="border-b border-gray-100 pb-2 last:border-b-0">
-              <div className="flex justify-between items-start">
-                <div className="flex items-center space-x-2">
-                  <span className="text-sm font-medium">#{index + 1}</span>
-                  <div>
-                    <div className="font-medium text-sm">{player.displayName}</div>
-                    <div className="text-xs text-gray-500">
-                      🥇{player.awards.goldMedals} 🥈{player.awards.silverMedals} 🥉{player.awards.bronzeMedals}
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="font-bold text-lg">{player.totalPoints}</div>
-                  <div className="text-xs text-gray-500">points</div>
-                </div>
+            <div key={player.displayName} className={`p-3 rounded border ${index < 3 ? 'bg-yellow-50' : ''}`}>
+              <div className="flex justify-between items-center mb-2">
+                <span className="font-medium">
+                  {index + 1}. {player.displayName}
+                </span>
+                <span className="font-bold text-lg">{player.totalPoints} pts</span>
               </div>
               
-              {/* Awards Summary */}
-              <div className="mt-2 grid grid-cols-3 gap-2 text-xs">
-                <div>
-                  <span className="text-gray-600">Gold: </span>
-                  <span className="font-mono">{player.awards.goldMedals}</span>
+              <div className="text-xs text-gray-600 space-y-1">
+                <div className="flex space-x-4">
+                  <span>🥇 {player.awards.goldMedals}</span>
+                  <span>🥈 {player.awards.silverMedals}</span>
+                  <span>🥉 {player.awards.bronzeMedals}</span>
+                  <span>💥 {player.awards.mostDamageAwards}</span>
+                  <span>👹 {(player.awards.sideBoss1Wins || 0) + (player.awards.sideBoss2Wins || 0)}</span>
+                  <span>🎯 {player.awards.biggestHitAwards}</span>
                 </div>
-                <div>
-                  <span className="text-gray-600">Silver: </span>
-                  <span className="font-mono">{player.awards.silverMedals}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Bronze: </span>
-                  <span className="font-mono">{player.awards.bronzeMedals}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Most Dam: </span>
-                  <span className="font-mono">{player.awards.mostDamageAwards}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Side1: </span>
-                  <span className="font-mono">{player.awards.sideBoss1Wins}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Side2: </span>
-                  <span className="font-mono">{player.awards.sideBoss2Wins}</span>
-                </div>
-                <div>
-                  <span className="text-gray-600">Big Hit: </span>
-                  <span className="font-mono">{player.awards.biggestHitAwards}</span>
-                </div>
-                {player.awards.topKiller && (
-                  <div>
-                    <span className="text-red-600 font-bold">Top Killer</span>
-                  </div>
-                )}
-                {player.awards.bestBomber && (
-                  <div>
-                    <span className="text-orange-600 font-bold">Best Bomber</span>
-                  </div>
-                )}
+                {player.awards.topKiller && <div className="text-green-600">🔪 Top Killer</div>}
+                {player.awards.bestBomber && <div className="text-red-600">💣 Best Bomber</div>}
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Set Winners */}
-      <div className="bg-white rounded-lg p-4 shadow-sm">
+      {/* Set Winners Table */}
+      <div className="bg-white rounded-lg p-4 shadow overflow-x-auto">
         <h3 className="font-semibold mb-3">Set Winners</h3>
-        <div className="space-y-3">
-          {setWinners.map((set) => (
-            <div key={set.set} className="space-y-2">
-              <div className="font-medium text-sm bg-gray-100 p-2 rounded">
-                L{set.set + 1} Winners
-              </div>
-              <div className="grid grid-cols-1 gap-1 text-xs">
-                <div className="flex justify-between">
-                  <span>🥇 Gold:</span>
-                  <span className="font-medium">{set.gold || 'N/A'} {set.goldValue ? `(${(set.goldValue / 1000000).toFixed(2)}M avg)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>🥈 Silver:</span>
-                  <span className="font-medium">{set.silver || 'N/A'} {set.silverValue ? `(${(set.silverValue / 1000000).toFixed(2)}M avg)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>🥉 Bronze:</span>
-                  <span className="font-medium">{set.bronze || 'N/A'} {set.bronzeValue ? `(${(set.bronzeValue / 1000000).toFixed(2)}M avg)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>💪 Most Damage:</span>
-                  <span className="font-medium">{set.mostDamage || 'N/A'} {set.mostDamageValue ? `(${(set.mostDamageValue / 1000000).toFixed(2)}M total)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>⚔️ Side Boss 1:</span>
-                  <span className="font-medium">{set.sideBoss1 || 'N/A'} {set.sideBoss1Value ? `(${(set.sideBoss1Value / 1000000).toFixed(2)}M avg)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>🗡️ Side Boss 2:</span>
-                  <span className="font-medium">{set.sideBoss2 || 'N/A'} {set.sideBoss2Value ? `(${(set.sideBoss2Value / 1000000).toFixed(2)}M avg)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>💥 Biggest Hit:</span>
-                  <span className="font-medium">{set.biggestHit || 'N/A'} {set.biggestHitValue ? `(${(set.biggestHitValue / 1000000).toFixed(2)}M)` : ''}</span>
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b">
+              <th className="text-left p-2">Set</th>
+              <th className="text-left p-2">🥇 Gold</th>
+              <th className="text-left p-2">🥈 Silver</th>
+              <th className="text-left p-2">🥉 Bronze</th>
+              <th className="text-left p-2">💥 Most Dmg</th>
+              <th className="text-left p-2">👹 Side 1</th>
+              <th className="text-left p-2">👹 Side 2</th>
+              <th className="text-left p-2">🎯 Big Hit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {setWinners.map((set, index) => (
+              <tr key={set.set} className="border-b">
+                <td className="p-2 font-medium">L{index + 1}</td>
+                <td className="p-2">{set.gold}</td>
+                <td className="p-2">{set.silver}</td>
+                <td className="p-2">{set.bronze}</td>
+                <td className="p-2">{set.mostDamage}</td>
+                <td className="p-2">{set.sideBoss1}</td>
+                <td className="p-2">{set.sideBoss2}</td>
+                <td className="p-2">{set.biggestHit}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   )
