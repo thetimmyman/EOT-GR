@@ -1,4 +1,9 @@
-'use client'
+interface PlayerStats {
+  totalDamage: number
+  avgDamagePerHit: number
+  tokensUsed: number
+  bombsUsed: number
+  vsCluster'use client'
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
@@ -15,7 +20,8 @@ interface PlayerStats {
   bombsUsed: number
   vsClusterAvg: number
   vsGuildAvg: number
-  bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number}}
+  bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}}
+  primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}}
   historicalTokens: {[key: string]: number}
 }
 
@@ -27,6 +33,10 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
   const [loading, setLoading] = useState(false)
   const [clusterAvg, setClusterAvg] = useState(0)
   const [guildAvg, setGuildAvg] = useState(0)
+  const [clusterBossAvgs, setClusterBossAvgs] = useState<{[key: string]: number}>({})
+  const [guildBossAvgs, setGuildBossAvgs] = useState<{[key: string]: number}>({})
+  const [clusterPrimeAvgs, setClusterPrimeAvgs] = useState<{[key: string]: number}>({})
+  const [guildPrimeAvgs, setGuildPrimeAvgs] = useState<{[key: string]: number}>({})
 
   useEffect(() => {
     if (selectedSeason && selectedGuild) {
@@ -94,26 +104,110 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         return
       }
 
-      // Get cluster data - simplified query, no filtering
+      // Get cluster data with boss/prime info for comparisons
       const { data: clusterData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType')
+        .select('damageDealt, damageType, Name, encounterId')
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
         .gt('damageDealt', 0)
-        .limit(10000)
+        .limit(15000)
 
-      // Get guild data - simplified query, no filtering  
+      // Get guild data with boss/prime info for comparisons
       const { data: guildData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType')
+        .select('damageDealt, damageType, Name, encounterId')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
         .gt('damageDealt', 0)
+        .limit(15000)
+
+      // Get historical data for past 5 seasons
+      const currentSeasonNum = parseInt(selectedSeason)
+      const pastSeasons = []
+      for (let i = 0; i < 5; i++) {
+        pastSeasons.push((currentSeasonNum - i).toString())
+      }
+
+      const { data: historicalData } = await supabase
+        .from('EOT_GR_data')
+        .select('Season, damageType')
+        .eq('Guild', selectedGuild)
+        .eq('displayName', selectedPlayer)
+        .in('Season', pastSeasons)
         .limit(10000)
 
-      // Calculate averages
+      // Calculate cluster and guild averages by boss/prime
+      const clusterBossAverages: {[key: string]: number} = {}
+      const clusterPrimeAverages: {[key: string]: number} = {}
+      const guildBossAverages: {[key: string]: number} = {}
+      const guildPrimeAverages: {[key: string]: number} = {}
+
+      // Process cluster data
+      if (clusterData) {
+        const clusterBossData: {[key: string]: number[]} = {}
+        const clusterPrimeData: {[key: string]: number[]} = {}
+        
+        clusterData.forEach(d => {
+          const bossName = d.Name || 'Unknown'
+          if (d.encounterId === 0) {
+            // Main boss
+            if (!clusterBossData[bossName]) clusterBossData[bossName] = []
+            clusterBossData[bossName].push(d.damageDealt || 0)
+          } else {
+            // Prime
+            if (!clusterPrimeData[bossName]) clusterPrimeData[bossName] = []
+            clusterPrimeData[bossName].push(d.damageDealt || 0)
+          }
+        })
+
+        Object.keys(clusterBossData).forEach(boss => {
+          const hits = clusterBossData[boss]
+          clusterBossAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+        })
+
+        Object.keys(clusterPrimeData).forEach(boss => {
+          const hits = clusterPrimeData[boss]
+          clusterPrimeAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+        })
+      }
+
+      // Process guild data
+      if (guildData) {
+        const guildBossData: {[key: string]: number[]} = {}
+        const guildPrimeData: {[key: string]: number[]} = {}
+        
+        guildData.forEach(d => {
+          const bossName = d.Name || 'Unknown'
+          if (d.encounterId === 0) {
+            // Main boss
+            if (!guildBossData[bossName]) guildBossData[bossName] = []
+            guildBossData[bossName].push(d.damageDealt || 0)
+          } else {
+            // Prime
+            if (!guildPrimeData[bossName]) guildPrimeData[bossName] = []
+            guildPrimeData[bossName].push(d.damageDealt || 0)
+          }
+        })
+
+        Object.keys(guildBossData).forEach(boss => {
+          const hits = guildBossData[boss]
+          guildBossAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+        })
+
+        Object.keys(guildPrimeData).forEach(boss => {
+          const hits = guildPrimeData[boss]
+          guildPrimeAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+        })
+      }
+
+      setClusterBossAvgs(clusterBossAverages)
+      setGuildBossAvgs(guildBossAverages)
+      setClusterPrimeAvgs(clusterPrimeAverages)
+      setGuildPrimeAvgs(guildPrimeAverages)
+
+      // Calculate overall averages
       const clusterAverage = clusterData && clusterData.length > 0 ? 
         clusterData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterData.length : 0
       setClusterAvg(clusterAverage)
@@ -135,26 +229,66 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       console.log('Player stats:', { totalDamage, tokensUsed, bombsUsed, avgDamagePerHit })
 
-      // Boss stats
-      const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number}} = {}
+      // Boss and Prime stats with comparisons
+      const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
+      const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
+      
       battleData.forEach(d => {
-        const bossKey = d.Name || 'Unknown'
-        if (!bossStats[bossKey]) {
-          bossStats[bossKey] = { damage: 0, tokens: 0, avgDamage: 0 }
+        const bossName = d.Name || 'Unknown'
+        
+        if (d.encounterId === 0) {
+          // Main boss
+          if (!bossStats[bossName]) {
+            bossStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0 }
+          }
+          bossStats[bossName].damage += d.damageDealt || 0
+          bossStats[bossName].tokens += 1
+          bossStats[bossName].biggestHit = Math.max(bossStats[bossName].biggestHit, d.damageDealt || 0)
+        } else {
+          // Prime
+          if (!primeStats[bossName]) {
+            primeStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0 }
+          }
+          primeStats[bossName].damage += d.damageDealt || 0
+          primeStats[bossName].tokens += 1
+          primeStats[bossName].biggestHit = Math.max(primeStats[bossName].biggestHit, d.damageDealt || 0)
         }
-        bossStats[bossKey].damage += d.damageDealt || 0
-        bossStats[bossKey].tokens += 1
       })
 
-      // Calculate boss averages
+      // Calculate averages and comparisons for bosses
       Object.keys(bossStats).forEach(boss => {
-        bossStats[boss].avgDamage = bossStats[boss].tokens > 0 ? 
-          bossStats[boss].damage / bossStats[boss].tokens : 0
+        const stats = bossStats[boss]
+        stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
+        
+        // Calculate vs cluster average
+        const clusterAvg = clusterBossAverages[boss] || 0
+        stats.vsClusterAvg = clusterAvg > 0 ? ((stats.avgDamage / clusterAvg) - 1) * 100 : 0
+        
+        // Calculate vs guild average
+        const guildAvg = guildBossAverages[boss] || 0
+        stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
       })
 
-      // Historical data (simplified - just current season)
+      // Calculate averages and comparisons for primes
+      Object.keys(primeStats).forEach(boss => {
+        const stats = primeStats[boss]
+        stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
+        
+        // Calculate vs cluster average
+        const clusterAvg = clusterPrimeAverages[boss] || 0
+        stats.vsClusterAvg = clusterAvg > 0 ? ((stats.avgDamage / clusterAvg) - 1) * 100 : 0
+        
+        // Calculate vs guild average
+        const guildAvg = guildPrimeAverages[boss] || 0
+        stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
+      })
+
+      // Historical tokens by season
       const historicalTokens: {[key: string]: number} = {}
-      historicalTokens[selectedSeason] = tokensUsed
+      pastSeasons.forEach(season => {
+        const seasonData = historicalData?.filter(d => d.Season === season && d.damageType === 'Battle') || []
+        historicalTokens[season] = seasonData.length
+      })
 
       // Calculate vs averages
       const vsClusterAvg = clusterAverage > 0 ? ((avgDamagePerHit / clusterAverage) - 1) * 100 : 0
@@ -168,6 +302,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         vsClusterAvg,
         vsGuildAvg,
         bossStats,
+        primeStats,
         historicalTokens
       }
 
@@ -329,11 +464,28 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
             </div>
           </div>
 
+          {/* Historical Activity */}
+          <div className="card-elevated p-8">
+            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
+              📅 Historical Token Usage (Past 5 Seasons)
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              {Object.entries(playerStats.historicalTokens)
+                .sort(([a], [b]) => b.localeCompare(a))
+                .map(([season, tokens]) => (
+                  <div key={season} className="text-center p-4 card-modern hover-lift">
+                    <div className="text-2xl font-bold accent-cyan mb-2">{tokens}</div>
+                    <div className="text-sm font-medium text-secondary">Season {season}</div>
+                  </div>
+                ))}
+            </div>
+          </div>
+
           {/* Boss Performance */}
           {Object.keys(playerStats.bossStats).length > 0 && (
             <div className="card-elevated p-8">
               <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-                ⚔️ Boss Performance
+                ⚔️ Boss Performance (Main Bosses)
               </h3>
               <div className="space-y-4">
                 {Object.entries(playerStats.bossStats)
@@ -349,6 +501,73 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                           <span className="stat-display accent-warning">
                             {(stats.avgDamage / 1000).toFixed(0)}K avg
                           </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-secondary">
+                        <div>
+                          <div className="font-medium">Biggest Hit:</div>
+                          <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
+                        </div>
+                        <div>
+                          <div className="font-medium">vs Cluster Avg:</div>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
+                            {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-medium">vs Guild Avg:</div>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
+                            {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-xs text-secondary mt-2">
+                        Total: {(stats.damage / 1000000).toFixed(2)}M damage
+                      </div>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          {/* Prime Performance */}
+          {Object.keys(playerStats.primeStats).length > 0 && (
+            <div className="card-elevated p-8">
+              <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
+                🎯 Prime Performance (Side Bosses)
+              </h3>
+              <div className="space-y-4">
+                {Object.entries(playerStats.primeStats)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([boss, stats]) => (
+                    <div key={boss} className="p-4 card-modern hover-lift">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="font-semibold text-primary">{boss} (Prime)</span>
+                        <div className="flex items-center space-x-4">
+                          <span className="text-sm text-secondary">
+                            {stats.tokens} tokens
+                          </span>
+                          <span className="stat-display accent-purple">
+                            {(stats.avgDamage / 1000).toFixed(0)}K avg
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-secondary">
+                        <div>
+                          <div className="font-medium">Biggest Hit:</div>
+                          <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
+                        </div>
+                        <div>
+                          <div className="font-medium">vs Cluster Avg:</div>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
+                            {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
+                          </div>
+                        </div>
+                        <div>
+                          <div className="font-medium">vs Guild Avg:</div>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
+                            {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
+                          </div>
                         </div>
                       </div>
                       <div className="text-xs text-secondary mt-2">
