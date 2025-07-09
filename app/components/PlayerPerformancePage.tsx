@@ -97,7 +97,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       .from('EOT_GR_data')
       .select(`
         displayName, damageDealt, Name, encounterId, loopIndex, tier, Season, 
-        remainingHp, damageType, Guild, rarity, set, overallTokenUseage
+        remainingHp, damageType, Guild, rarity, set
       `)
       .eq('Season', selectedSeason)
       .eq('damageType', 'Battle')
@@ -143,9 +143,10 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
     }
 
     // Add overallTokenUsage for records that don't have it
+    // Add overallTokenUsage for all records (calculated like Power BI)
     const dataWithTokenUsage = filteredData.map(d => ({
       ...d,
-      overallTokenUsage: d.overallTokenUseage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
+      overallTokenUsage: d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
     }))
 
     // Group by boss and overallTokenUsage for averages
