@@ -43,23 +43,56 @@ export default function Dashboard() {
       console.log('Connection successful:', testData)
       setConnected(true)
 
-      // Try to fetch seasons using the same query structure
-      const { data: seasonData, error: seasonError } = await supabase
-        .from('EOT_GR_data')
-        .select('Season')
-        .not('Season', 'is', null)
-
-      if (seasonError) {
+      // Efficient season fetching - get a sample from each potential season
+      // We'll try multiple approaches to get all seasons
+      let allSeasons: string[] = []
+      
+      try {
+        // Approach 1: Try getting seasons 70-80 (recent range)
+        for (let season = 70; season <= 80; season++) {
+          const { data: seasonCheck } = await supabase
+            .from('EOT_GR_data')
+            .select('Season')
+            .eq('Season', season.toString())
+            .limit(1)
+          
+          if (seasonCheck && seasonCheck.length > 0) {
+            allSeasons.push(season.toString())
+          }
+        }
+        
+        // If we didn't find many seasons, try a broader approach
+        if (allSeasons.length < 3) {
+          const { data: seasonData } = await supabase
+            .from('EOT_GR_data')
+            .select('Season')
+            .not('Season', 'is', null)
+            .order('Season', { ascending: false })
+            .limit(5000) // Higher limit to catch more seasons
+          
+          if (seasonData) {
+            const seasonSet = new Set(seasonData.map(d => d.Season))
+            allSeasons = Array.from(seasonSet)
+          }
+        }
+        
+        console.log('Found seasons:', allSeasons)
+        const sortedSeasons = allSeasons.sort((a, b) => parseInt(b) - parseInt(a))
+        setSeasons(sortedSeasons)
+        
+        if (sortedSeasons.length > 0 && !selectedSeason) {
+          setSelectedSeason(sortedSeasons[0]) // Set to latest season
+        }
+        
+      } catch (seasonError) {
         console.error('Error fetching seasons:', seasonError)
-      } else {
-        const seasonSet = new Set(seasonData?.map(d => d.Season) || [])
-        const seasonList = Array.from(seasonSet).sort()
-        console.log('Found seasons:', seasonList)
-        setSeasons(seasonList)
-        if (seasonList.length > 0 && !selectedSeason) {
-          setSelectedSeason(seasonList[seasonList.length - 1]) // Set to latest season
+        // Fallback - just use the season from the test data
+        if (testData && testData[0]?.Season) {
+          setSeasons([testData[0].Season])
+          setSelectedSeason(testData[0].Season)
         }
       }
+      
     } catch (error) {
       console.error('Connection test failed:', error)
       setConnected(false)
