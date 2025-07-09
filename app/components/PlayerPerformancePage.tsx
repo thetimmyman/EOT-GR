@@ -58,16 +58,6 @@ const getSpecialCases = (entry: any, allData: any[]) => {
   return "Standard"
 }
 
-// Calculate overallTokenUsage equivalent (if not available in DB)
-const getOverallTokenUsage = (entry: any) => {
-  if (entry.overallTokenUsage) return entry.overallTokenUsage
-  
-  if (entry.tier >= 4) {
-    return entry.encounterId === 0 ? entry.Name : "Leg. Primes"
-  }
-  return "Non-Leg."
-}
-
 export default function PlayerPerformancePage({ selectedGuild, selectedSeason }: PlayerPerformancePageProps) {
   const [playerBossStats, setPlayerBossStats] = useState<PlayerBossStats[]>([])
   const [playerSummaries, setPlayerSummaries] = useState<PlayerSummary[]>([])
@@ -89,7 +79,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       return
     }
     
-    // Get all battle data for the season with proper filters
+    // Get ALL battle data for the season - need full dataset for SpecialCases calculation
     const { data: allData, error } = await supabase
       .from('EOT_GR_data')
       .select(`
@@ -97,8 +87,10 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         remainingHp, damageType, Guild, rarity, set, overallTokenUsage
       `)
       .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')  // Only Battle type (excludes Bomb automatically)
+      .eq('damageType', 'Battle')  // Only Battle type
       .gte('tier', 4)              // Legendary tier (4+)
+      .gt('damageDealt', 0)        // Valid damage only
+      .limit(50000)
 
     if (error) {
       console.error('Error fetching data:', error)
@@ -106,20 +98,25 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       return
     }
 
-    if (!allData) {
+    if (!allData || allData.length === 0) {
+      console.log('No data found')
       setLoading(false)
       return
     }
 
-    // Add SpecialCases and overallTokenUsage to each entry
+    console.log('Raw data loaded:', allData.length, 'records')
+
+    // Apply SpecialCases logic to identify last hits correctly
     const dataWithSpecialCases = allData.map(d => ({
       ...d,
       specialCases: getSpecialCases(d, allData),
-      overallTokenUsage: getOverallTokenUsage(d)
+      overallTokenUsage: d.overallTokenUsage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
     }))
 
     // Filter out "Last Hit" entries (matching DAX logic: SpecialCases <> "Last Hit")
     const filteredData = dataWithSpecialCases.filter(d => d.specialCases !== "Last Hit")
+
+    console.log('Filtered data (no last hits):', filteredData.length, 'records')
 
     // Group by boss and overallTokenUsage for averages (matching DAX logic exactly)
     const bossStats = new Map<string, {
@@ -165,6 +162,8 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       }
     })
 
+    console.log('Boss stats computed for', bossStats.size, 'boss/token combinations')
+
     // Calculate per-boss performance for each player (matching DAX playerVsAvg calculation)
     const playerBossResults: PlayerBossStats[] = []
     
@@ -196,6 +195,8 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       })
     })
 
+    console.log('Player boss results:', playerBossResults.length, 'entries')
+
     // Calculate overall player summaries (weighted average across all bosses)
     const playerSummaryMap = new Map<string, {
       clusterPerfs: number[]
@@ -224,8 +225,8 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
     const playerSummaryResults: PlayerSummary[] = Array.from(playerSummaryMap.entries())
       .map(([name, data]) => ({
         displayName: name,
-        avgVsCluster: data.clusterPerfs.reduce((sum, p) => sum + p, 0) / data.clusterPerfs.length,
-        avgVsGuild: data.guildPerfs.reduce((sum, p) => sum + p, 0) / data.guildPerfs.length,
+        avgVsCluster: data.clusterPerfs.length > 0 ? data.clusterPerfs.reduce((sum, p) => sum + p, 0) / data.clusterPerfs.length : 0,
+        avgVsGuild: data.guildPerfs.length > 0 ? data.guildPerfs.reduce((sum, p) => sum + p, 0) / data.guildPerfs.length : 0,
         totalBattles: data.totalBattles,
         bossesPlayed: data.bossesPlayed
       }))
@@ -234,6 +235,10 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         const bValue = viewMode === 'cluster' ? b.avgVsCluster : b.avgVsGuild
         return bValue - aValue
       })
+
+    console.log('Final player summaries:', playerSummaryResults.length, 'players')
+    console.log('Above average (cluster):', playerSummaryResults.filter(p => p.avgVsCluster > 0).length)
+    console.log('Above average (guild):', playerSummaryResults.filter(p => p.avgVsGuild > 0).length)
 
     setPlayerBossStats(playerBossResults)
     setPlayerSummaries(playerSummaryResults)
