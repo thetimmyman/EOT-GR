@@ -79,7 +79,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       // Get ALL cluster data - simplified query
       const { data: allClusterData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUseage, loopIndex, tier, Season, Guild')
+        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild')
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
         .gte('tier', 4)
@@ -90,7 +90,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       // Get ALL guild data - simplified query
       const { data: allGuildData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUseage, loopIndex, tier, Season, Guild')
+        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
@@ -166,7 +166,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredClusterData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.overallTokenUseage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
+          const bossRank = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
           
           if (d.encounterId === 0) {
             if (!clusterBossData[bossName]) clusterBossData[bossName] = {}
@@ -203,7 +203,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredGuildData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.overallTokenUseage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
+          const bossRank = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
           
           if (d.encounterId === 0) {
             if (!guildBossData[bossName]) guildBossData[bossName] = {}
@@ -292,7 +292,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const playerBossData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId === 0)
         const mostCommonRank = playerBossData.length > 0 ? 
-          (playerBossData[0].overallTokenUseage || (playerBossData[0].tier >= 4 ? playerBossData[0].Name : "Non-Leg.")) : 
+          (playerBossData[0].tier >= 4 ? playerBossData[0].Name : "Non-Leg.") : 
           boss
         const comparisonKey = `${boss}_${mostCommonRank}`
         
@@ -312,7 +312,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const playerPrimeData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId > 0)
         const mostCommonRank = playerPrimeData.length > 0 ? 
-          (playerPrimeData[0].overallTokenUseage || "Leg. Primes") : 
+          "Leg. Primes" : 
           "Leg. Primes"
         const comparisonKey = `${boss}_${mostCommonRank}`
         
