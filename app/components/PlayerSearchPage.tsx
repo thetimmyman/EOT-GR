@@ -95,72 +95,65 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     if (!selectedPlayer || !selectedGuild || !selectedSeason) return
     
     setLoading(true)
+    console.log('Fetching stats for:', selectedPlayer, selectedGuild, selectedSeason)
 
-    // Get player data for current season and guild (no heavy filtering for basic stats)
-    const { data: playerData, error: playerError } = await supabase
-      .from('EOT_GR_data')
-      .select('*')
-      .eq('Guild', selectedGuild)
-      .eq('Season', selectedSeason)
-      .eq('displayName', selectedPlayer)
-      .limit(5000) // Higher limit for player data
+    try {
+      // Get ALL player data for current season and guild (no filtering first)
+      const { data: playerData, error: playerError } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('displayName', selectedPlayer)
+        .limit(10000)
 
-    // Get cluster data for averages (SAME SEASON ONLY)
-    const { data: clusterData, error: clusterError } = await supabase
-      .from('EOT_GR_data')
-      .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
-      .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')
-      .eq('rarity', 'Legendary')
-      .neq('damageDealt', null)
+      console.log('Player data found:', playerData?.length || 0)
 
-    // Get guild data for averages (SAME SEASON ONLY)
-    const { data: guildData, error: guildError } = await supabase
-      .from('EOT_GR_data')
-      .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
-      .eq('Guild', selectedGuild)
-      .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')
-      .eq('rarity', 'Legendary')
-      .neq('damageDealt', null)
+      if (playerError) {
+        console.error('Error fetching player data:', playerError)
+        setLoading(false)
+        return
+      }
 
-    // Get historical data for all seasons
-    const { data: historicalData, error: historicalError } = await supabase
-      .from('EOT_GR_data')
-      .select('Season, damageType, displayName')
-      .eq('Guild', selectedGuild)
-      .eq('displayName', selectedPlayer)
+      if (!playerData || playerData.length === 0) {
+        console.log('No data found for player')
+        setLoading(false)
+        return
+      }
 
-    // Get available seasons
-    const { data: seasonData } = await supabase
-      .from('EOT_GR_data')
-      .select('Season')
-      .eq('Guild', selectedGuild)
+      // Get cluster data for averages (simplified)
+      const { data: clusterData } = await supabase
+        .from('EOT_GR_data')
+        .select('damageDealt, damageType')
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .neq('damageDealt', null)
+        .limit(10000)
 
-    if (playerError || clusterError || guildError || historicalError) {
-      console.error('Error fetching data:', { playerError, clusterError, guildError, historicalError })
-      setLoading(false)
-      return
-    }
+      // Get guild data for averages (simplified)
+      const { data: guildData } = await supabase
+        .from('EOT_GR_data')
+        .select('damageDealt, damageType')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .neq('damageDealt', null)
+        .limit(10000)
 
-    if (playerData && playerData.length > 0) {
-      // Calculate cluster average damage per hit (all guilds, same season)
+      // Calculate cluster and guild averages
       const clusterHits = clusterData?.filter(d => d.damageDealt > 0) || []
       const clusterAverage = clusterHits.length > 0 ? 
         clusterHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterHits.length : 0
       setClusterAvg(clusterAverage)
 
-      // Calculate guild average damage per hit (same guild, same season)
       const guildHits = guildData?.filter(d => d.damageDealt > 0) || []
       const guildAverage = guildHits.length > 0 ? 
         guildHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / guildHits.length : 0
       setGuildAvg(guildAverage)
 
-      // Get historical seasons
-      const uniqueSeasons = new Set(seasonData?.map(d => d.Season) || [])
-      const historicalSeasons = Array.from(uniqueSeasons).sort()
+      console.log('Averages - Cluster:', clusterAverage, 'Guild:', guildAverage)
 
-      // Calculate player stats
+      // Calculate player stats from ALL their data
       const battleData = playerData.filter(d => d.damageType === 'Battle')
       const bombData = playerData.filter(d => d.damageType === 'Bomb')
       
@@ -169,11 +162,12 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       const bombsUsed = bombData.length
       const avgDamagePerHit = tokensUsed > 0 ? totalDamage / tokensUsed : 0
 
-      // Boss-specific stats
+      console.log('Player stats:', { totalDamage, tokensUsed, bombsUsed, avgDamagePerHit })
+
+      // Boss-specific stats (simplified)
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number}} = {}
       battleData.forEach(d => {
-        const bossKey = d.rarity === 'Legendary' ? 
-          d.Name : `${d.Name} (Prime)`
+        const bossKey = d.Name || 'Unknown'
         if (!bossStats[bossKey]) {
           bossStats[bossKey] = { damage: 0, tokens: 0, avgDamage: 0 }
         }
@@ -187,18 +181,15 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
           bossStats[boss].damage / bossStats[boss].tokens : 0
       })
 
-      // Historical tokens by season
+      // Simplified historical data (just current season for now)
       const historicalTokens: {[key: string]: number} = {}
-      historicalSeasons.forEach(season => {
-        const seasonData = historicalData?.filter(d => d.Season === season && d.damageType === 'Battle') || []
-        historicalTokens[season] = seasonData.length
-      })
+      historicalTokens[selectedSeason] = tokensUsed
 
       // Calculate vs averages
       const vsClusterAvg = clusterAverage > 0 ? ((avgDamagePerHit / clusterAverage) - 1) * 100 : 0
       const vsGuildAvg = guildAverage > 0 ? ((avgDamagePerHit / guildAverage) - 1) * 100 : 0
 
-      setPlayerStats({
+      const finalStats = {
         totalDamage,
         avgDamagePerHit,
         tokensUsed,
@@ -207,7 +198,13 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         vsGuildAvg,
         bossStats,
         historicalTokens
-      })
+      }
+
+      console.log('Final stats:', finalStats)
+      setPlayerStats(finalStats)
+
+    } catch (error) {
+      console.error('Error in fetchPlayerStats:', error)
     }
 
     setLoading(false)
