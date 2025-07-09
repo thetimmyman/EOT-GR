@@ -1,4 +1,16 @@
-interface PlayerStats {
+console.log('Player data found:', playerData?.length || 0)
+
+      if (playerError) {
+        console.error('Error fetching player data:', playerError)
+        setLoading(false)
+        return
+      }
+
+      if (!playerData || playerData.length === 0) {
+        console.log('No data found for player')
+        setLoading(false)
+        return
+      }interface PlayerStats {
   totalDamage: number
   avgDamagePerHit: number
   tokensUsed: number
@@ -81,47 +93,39 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     console.log('Fetching stats for:', selectedPlayer, selectedGuild, selectedSeason)
 
     try {
-      // Get ALL player data - no filtering
+      // Get cluster data with proper filters matching Power BI
+      const { data: clusterData } = await supabase
+        .from('EOT_GR_data')
+        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUseage')
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')
+        .neq('remainingHp', 0) // Exclude last hits (remainingHp = 0)
+        .gt('damageDealt', 0)
+        .limit(15000)
+
+      // Get guild data with proper filters matching Power BI
+      const { data: guildData } = await supabase
+        .from('EOT_GR_data')
+        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUseage')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')
+        .neq('remainingHp', 0) // Exclude last hits (remainingHp = 0)
+        .gt('damageDealt', 0)
+        .limit(15000)
+
+      // Get player data with proper filters
       const { data: playerData, error: playerError } = await supabase
         .from('EOT_GR_data')
         .select('*')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('displayName', selectedPlayer)
+        .eq('rarity', 'Legendary')
+        .neq('remainingHp', 0) // Exclude last hits
         .limit(10000)
-
-      console.log('Player data found:', playerData?.length || 0)
-
-      if (playerError) {
-        console.error('Error fetching player data:', playerError)
-        setLoading(false)
-        return
-      }
-
-      if (!playerData || playerData.length === 0) {
-        console.log('No data found for player')
-        setLoading(false)
-        return
-      }
-
-      // Get cluster data with boss/prime info for comparisons
-      const { data: clusterData } = await supabase
-        .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId')
-        .eq('Season', selectedSeason)
-        .eq('damageType', 'Battle')
-        .gt('damageDealt', 0)
-        .limit(15000)
-
-      // Get guild data with boss/prime info for comparisons
-      const { data: guildData } = await supabase
-        .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId')
-        .eq('Guild', selectedGuild)
-        .eq('Season', selectedSeason)
-        .eq('damageType', 'Battle')
-        .gt('damageDealt', 0)
-        .limit(15000)
 
       // Get historical data for past 5 seasons
       const currentSeasonNum = parseInt(selectedSeason)
@@ -144,61 +148,83 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       const guildBossAverages: {[key: string]: number} = {}
       const guildPrimeAverages: {[key: string]: number} = {}
 
-      // Process cluster data
+      // Process cluster data with proper grouping by boss and overallTokenUseage (boss rank)
       if (clusterData) {
-        const clusterBossData: {[key: string]: number[]} = {}
-        const clusterPrimeData: {[key: string]: number[]} = {}
+        const clusterBossData: {[key: string]: {[rank: string]: number[]}} = {}
+        const clusterPrimeData: {[key: string]: {[rank: string]: number[]}} = {}
         
         clusterData.forEach(d => {
           const bossName = d.Name || 'Unknown'
+          const bossRank = d.overallTokenUseage || '0'
+          
           if (d.encounterId === 0) {
             // Main boss
-            if (!clusterBossData[bossName]) clusterBossData[bossName] = []
-            clusterBossData[bossName].push(d.damageDealt || 0)
+            if (!clusterBossData[bossName]) clusterBossData[bossName] = {}
+            if (!clusterBossData[bossName][bossRank]) clusterBossData[bossName][bossRank] = []
+            clusterBossData[bossName][bossRank].push(d.damageDealt || 0)
           } else {
             // Prime
-            if (!clusterPrimeData[bossName]) clusterPrimeData[bossName] = []
-            clusterPrimeData[bossName].push(d.damageDealt || 0)
+            if (!clusterPrimeData[bossName]) clusterPrimeData[bossName] = {}
+            if (!clusterPrimeData[bossName][bossRank]) clusterPrimeData[bossName][bossRank] = []
+            clusterPrimeData[bossName][bossRank].push(d.damageDealt || 0)
           }
         })
 
+        // Calculate averages by boss and rank
         Object.keys(clusterBossData).forEach(boss => {
-          const hits = clusterBossData[boss]
-          clusterBossAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          Object.keys(clusterBossData[boss]).forEach(rank => {
+            const hits = clusterBossData[boss][rank]
+            const key = `${boss}_${rank}`
+            clusterBossAverages[key] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          })
         })
 
         Object.keys(clusterPrimeData).forEach(boss => {
-          const hits = clusterPrimeData[boss]
-          clusterPrimeAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          Object.keys(clusterPrimeData[boss]).forEach(rank => {
+            const hits = clusterPrimeData[boss][rank]
+            const key = `${boss}_${rank}`
+            clusterPrimeAverages[key] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          })
         })
       }
 
-      // Process guild data
+      // Process guild data with proper grouping by boss and overallTokenUseage (boss rank)
       if (guildData) {
-        const guildBossData: {[key: string]: number[]} = {}
-        const guildPrimeData: {[key: string]: number[]} = {}
+        const guildBossData: {[key: string]: {[rank: string]: number[]}} = {}
+        const guildPrimeData: {[key: string]: {[rank: string]: number[]}} = {}
         
         guildData.forEach(d => {
           const bossName = d.Name || 'Unknown'
+          const bossRank = d.overallTokenUseage || '0'
+          
           if (d.encounterId === 0) {
             // Main boss
-            if (!guildBossData[bossName]) guildBossData[bossName] = []
-            guildBossData[bossName].push(d.damageDealt || 0)
+            if (!guildBossData[bossName]) guildBossData[bossName] = {}
+            if (!guildBossData[bossName][bossRank]) guildBossData[bossName][bossRank] = []
+            guildBossData[bossName][bossRank].push(d.damageDealt || 0)
           } else {
             // Prime
-            if (!guildPrimeData[bossName]) guildPrimeData[bossName] = []
-            guildPrimeData[bossName].push(d.damageDealt || 0)
+            if (!guildPrimeData[bossName]) guildPrimeData[bossName] = {}
+            if (!guildPrimeData[bossName][bossRank]) guildPrimeData[bossName][bossRank] = []
+            guildPrimeData[bossName][bossRank].push(d.damageDealt || 0)
           }
         })
 
+        // Calculate averages by boss and rank
         Object.keys(guildBossData).forEach(boss => {
-          const hits = guildBossData[boss]
-          guildBossAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          Object.keys(guildBossData[boss]).forEach(rank => {
+            const hits = guildBossData[boss][rank]
+            const key = `${boss}_${rank}`
+            guildBossAverages[key] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          })
         })
 
         Object.keys(guildPrimeData).forEach(boss => {
-          const hits = guildPrimeData[boss]
-          guildPrimeAverages[boss] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          Object.keys(guildPrimeData[boss]).forEach(rank => {
+            const hits = guildPrimeData[boss][rank]
+            const key = `${boss}_${rank}`
+            guildPrimeAverages[key] = hits.length > 0 ? hits.reduce((a, b) => a + b, 0) / hits.length : 0
+          })
         })
       }
 
@@ -218,23 +244,31 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       console.log('Averages - Cluster:', clusterAverage, 'Guild:', guildAverage)
 
-      // Calculate player stats
-      const battleData = playerData.filter(d => d.damageType === 'Battle')
+      // Calculate player stats from properly filtered data
       const bombData = playerData.filter(d => d.damageType === 'Bomb')
       
-      const totalDamage = playerData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
+      const totalDamage = battleData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) + 
+                         bombData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const tokensUsed = battleData.length
       const bombsUsed = bombData.length
       const avgDamagePerHit = tokensUsed > 0 ? totalDamage / tokensUsed : 0
 
       console.log('Player stats:', { totalDamage, tokensUsed, bombsUsed, avgDamagePerHit })
 
-      // Boss and Prime stats with comparisons
+      // Boss and Prime stats with proper comparisons matching Power BI logic
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
       const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
       
+      // Filter to only Battle, Legendary, non-last hits
+      const battleData = playerData.filter(d => 
+        d.damageType === 'Battle' && 
+        d.rarity === 'Legendary' && 
+        d.remainingHp !== 0 // Exclude last hits
+      )
+      
       battleData.forEach(d => {
         const bossName = d.Name || 'Unknown'
+        const bossRank = d.overallTokenUseage || '0'
         
         if (d.encounterId === 0) {
           // Main boss
@@ -255,31 +289,41 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         }
       })
 
-      // Calculate averages and comparisons for bosses
+      // Calculate averages and comparisons for bosses using the proper key format
       Object.keys(bossStats).forEach(boss => {
         const stats = bossStats[boss]
         stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
         
+        // For comparison, we need to find the correct boss rank for this player's data
+        const playerBossData = battleData.filter(d => d.Name === boss && d.encounterId === 0)
+        const mostCommonRank = playerBossData.length > 0 ? playerBossData[0].overallTokenUseage || '0' : '0'
+        const comparisonKey = `${boss}_${mostCommonRank}`
+        
         // Calculate vs cluster average
-        const clusterAvg = clusterBossAverages[boss] || 0
+        const clusterAvg = clusterBossAverages[comparisonKey] || 0
         stats.vsClusterAvg = clusterAvg > 0 ? ((stats.avgDamage / clusterAvg) - 1) * 100 : 0
         
         // Calculate vs guild average
-        const guildAvg = guildBossAverages[boss] || 0
+        const guildAvg = guildBossAverages[comparisonKey] || 0
         stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
       })
 
-      // Calculate averages and comparisons for primes
+      // Calculate averages and comparisons for primes using the proper key format
       Object.keys(primeStats).forEach(boss => {
         const stats = primeStats[boss]
         stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
         
+        // For comparison, we need to find the correct boss rank for this player's data
+        const playerPrimeData = battleData.filter(d => d.Name === boss && d.encounterId > 0)
+        const mostCommonRank = playerPrimeData.length > 0 ? playerPrimeData[0].overallTokenUseage || '0' : '0'
+        const comparisonKey = `${boss}_${mostCommonRank}`
+        
         // Calculate vs cluster average
-        const clusterAvg = clusterPrimeAverages[boss] || 0
+        const clusterAvg = clusterPrimeAverages[comparisonKey] || 0
         stats.vsClusterAvg = clusterAvg > 0 ? ((stats.avgDamage / clusterAvg) - 1) * 100 : 0
         
         // Calculate vs guild average
-        const guildAvg = guildPrimeAverages[boss] || 0
+        const guildAvg = guildPrimeAverages[comparisonKey] || 0
         stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
       })
 
