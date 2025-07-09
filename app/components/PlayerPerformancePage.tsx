@@ -28,8 +28,11 @@ interface PlayerSummary {
   bossesPlayed: number
 }
 
-// Helper function to identify last hits (replicate DAX SpecialCases logic)
-const isLastHit = (entry: any, allData: any[]) => {
+// Helper function to calculate SpecialCases (replicate DAX logic exactly)
+const getSpecialCases = (entry: any, allData: any[]) => {
+  if (!entry.damageDealt) return "Crash"
+  
+  // Find all entries for this specific boss encounter
   const sameEncounterData = allData.filter(d => 
     d.loopIndex === entry.loopIndex &&
     d.Name === entry.Name &&
@@ -38,13 +41,27 @@ const isLastHit = (entry: any, allData: any[]) => {
     d.Guild === entry.Guild
   )
   
+  // Find minimum remaining HP for this encounter
   const minRemainingHp = Math.min(...sameEncounterData.map(d => d.remainingHp || 0))
   
-  return entry.remainingHp === minRemainingHp && entry.damageType === 'Battle'
+  // Count total hits for this encounter
+  const totalHits = sameEncounterData.length
+  
+  // Check if this is a last hit (minimum remaining HP AND Battle damage type)
+  const isLastHit = (entry.remainingHp === minRemainingHp && entry.damageType === 'Battle')
+  
+  // Check if this is a one shot (last hit with only 1 total hit)
+  const isOneShot = (isLastHit && totalHits === 1)
+  
+  if (isOneShot) return "One Shot"
+  if (isLastHit) return "Last Hit"
+  return "Standard"
 }
 
-// Calculate overallTokenUsage equivalent
+// Calculate overallTokenUsage equivalent (if not available in DB)
 const getOverallTokenUsage = (entry: any) => {
+  if (entry.overallTokenUsage) return entry.overallTokenUsage
+  
   if (entry.tier >= 4) {
     return entry.encounterId === 0 ? entry.Name : "Leg. Primes"
   }
@@ -72,17 +89,16 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       return
     }
     
-    // Get all battle data for the season (all guilds for cluster comparison)
+    // Get all battle data for the season with proper filters
     const { data: allData, error } = await supabase
       .from('EOT_GR_data')
       .select(`
         displayName, damageDealt, Name, encounterId, loopIndex, tier, Season, 
-        remainingHp, damageType, Guild, rarity, set
+        remainingHp, damageType, Guild, rarity, set, overallTokenUsage
       `)
       .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')
-      .gte('tier', 4)  // Legendary only
-      .eq('rarity', 'Legendary')  
+      .eq('damageType', 'Battle')  // Only Battle type (excludes Bomb automatically)
+      .gte('tier', 4)              // Legendary tier (4+)
 
     if (error) {
       console.error('Error fetching data:', error)
@@ -95,16 +111,17 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       return
     }
 
-    // Filter out last hits
-    const filteredData = allData.filter(d => !isLastHit(d, allData))
-    
-    // Add overallTokenUsage to each entry
-    const dataWithTokenUsage = filteredData.map(d => ({
+    // Add SpecialCases and overallTokenUsage to each entry
+    const dataWithSpecialCases = allData.map(d => ({
       ...d,
+      specialCases: getSpecialCases(d, allData),
       overallTokenUsage: getOverallTokenUsage(d)
     }))
 
-    // Group by boss and overallTokenUsage for averages
+    // Filter out "Last Hit" entries (matching DAX logic: SpecialCases <> "Last Hit")
+    const filteredData = dataWithSpecialCases.filter(d => d.specialCases !== "Last Hit")
+
+    // Group by boss and overallTokenUsage for averages (matching DAX logic exactly)
     const bossStats = new Map<string, {
       clusterTotal: number
       clusterCount: number
@@ -113,7 +130,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       playerStats: Map<string, { total: number, count: number }>
     }>()
 
-    dataWithTokenUsage.forEach(entry => {
+    filteredData.forEach(entry => {
       const key = `${entry.Name}_${entry.overallTokenUsage}`
       
       if (!bossStats.has(key)) {
@@ -129,16 +146,16 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       const stats = bossStats.get(key)!
       const damage = entry.damageDealt || 0
       
-      // Cluster stats (all guilds)
+      // Cluster stats (all guilds) - matches DAX avgPerSeasonPerBoss calculation
       stats.clusterTotal += damage
       stats.clusterCount += 1
       
-      // Guild stats (selected guild only)
+      // Guild stats (selected guild only) - matches DAX guild logic
       if (entry.Guild === selectedGuild) {
         stats.guildTotal += damage
         stats.guildCount += 1
         
-        // Player stats within guild
+        // Player stats within guild - matches avgPerSeasonPerBossPerPlayer
         if (!stats.playerStats.has(entry.displayName)) {
           stats.playerStats.set(entry.displayName, { total: 0, count: 0 })
         }
@@ -148,7 +165,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       }
     })
 
-    // Calculate per-boss performance for each player
+    // Calculate per-boss performance for each player (matching DAX playerVsAvg calculation)
     const playerBossResults: PlayerBossStats[] = []
     
     bossStats.forEach((stats, key) => {
@@ -159,6 +176,8 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       stats.playerStats.forEach((playerStat, playerName) => {
         if (playerStat.count > 1) { // Only players with multiple battles on this boss
           const playerAvg = playerStat.total / playerStat.count
+          
+          // Match DAX calculation exactly: (avgPerSeasonPerBossPerPlayer/avgPerSeasonPerBoss-1)*100
           const vsClusterPct = clusterAvg > 0 ? ((playerAvg / clusterAvg) - 1) * 100 : 0
           const vsGuildPct = guildAvg > 0 ? ((playerAvg / guildAvg) - 1) * 100 : 0
           
@@ -177,7 +196,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       })
     })
 
-    // Calculate overall player summaries
+    // Calculate overall player summaries (weighted average across all bosses)
     const playerSummaryMap = new Map<string, {
       clusterPerfs: number[]
       guildPerfs: number[]
