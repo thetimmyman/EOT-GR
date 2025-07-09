@@ -13,7 +13,6 @@ import L4BossPage from './components/L4BossPage'
 import L5BossPage from './components/L5BossPage'
 import VOTLWPage from './components/VOTLWPage'
 import DebugPage from './components/DebugPage'
-import { Analytics } from "@vercel/analytics/next"
 
 export default function Dashboard() {
   const [currentPage, setCurrentPage] = useState('summary')
