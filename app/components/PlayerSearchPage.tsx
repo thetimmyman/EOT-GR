@@ -82,7 +82,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     }
 
     if (data) {
-      const players = [...new Set(data.map(d => d.displayName))].sort()
+      const uniqueNames = new Set(data.map(d => d.displayName))
+      const players = Array.from(uniqueNames).sort()
       setAvailablePlayers(players)
     }
   }
@@ -101,71 +102,74 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       .eq('displayName', selectedPlayer)
 
     // Get cluster data for averages (SAME SEASON ONLY)
-const { data: clusterData, error: clusterError } = await supabase
-  .from('EOT_GR_data')
-  .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
-  .eq('Season', selectedSeason)
-  .eq('damageType', 'Battle')
-  .eq('rarity', 'Legendary')     // ✅ ADD THIS LINE
-  .gte('tier', 4)                // ✅ ADD THIS LINE
+    const { data: clusterData, error: clusterError } = await supabase
+      .from('EOT_GR_data')
+      .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
+      .eq('Season', selectedSeason)
+      .eq('damageType', 'Battle')
+      .eq('rarity', 'Legendary')
+      .neq('damageDealt', null)
 
-    // Get guild data for averages (SAME SEASON AND GUILD)
-const { data: guildData, error: guildError } = await supabase
-  .from('EOT_GR_data')
-  .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
-  .eq('Guild', selectedGuild)
-  .eq('Season', selectedSeason)
-  .eq('damageType', 'Battle')
-  .eq('rarity', 'Legendary')     // ✅ ADD THIS LINE
-  .gte('tier', 4)                // ✅ ADD THIS LINE
+    // Get guild data for averages (SAME SEASON ONLY)
+    const { data: guildData, error: guildError } = await supabase
+      .from('EOT_GR_data')
+      .select('damageDealt, damageType, loopIndex, Name, tier, Season, remainingHp')
+      .eq('Guild', selectedGuild)
+      .eq('Season', selectedSeason)
+      .eq('damageType', 'Battle')
+      .eq('rarity', 'Legendary')
+      .neq('damageDealt', null)
 
-    if (playerError || clusterError || guildError) {
-      console.error('Error fetching data:', playerError || clusterError || guildError)
+    // Get historical data for all seasons
+    const { data: historicalData, error: historicalError } = await supabase
+      .from('EOT_GR_data')
+      .select('Season, damageType, displayName')
+      .eq('Guild', selectedGuild)
+      .eq('displayName', selectedPlayer)
+
+    // Get available seasons
+    const { data: seasonData } = await supabase
+      .from('EOT_GR_data')
+      .select('Season')
+      .eq('Guild', selectedGuild)
+
+    if (playerError || clusterError || guildError || historicalError) {
+      console.error('Error fetching data:', { playerError, clusterError, guildError, historicalError })
       setLoading(false)
       return
     }
 
-    // Get historical data (last 5 seasons)
-    const currentSeasonNum = parseInt(selectedSeason)
-    const historicalSeasons = Array.from({length: 5}, (_, i) => (currentSeasonNum - i).toString())
-    
-    const { data: historicalData } = await supabase
-      .from('EOT_GR_data')
-      .select('Season, damageType')
-      .eq('Guild', selectedGuild)
-      .eq('displayName', selectedPlayer)
-      .in('Season', historicalSeasons)
-
-    if (playerData && clusterData && guildData) {
-      // Filter out last hits
-      const playerBattles = playerData.filter(d => 
-        d.damageType === 'Battle' && !isLastHit(d, playerData)
-      )
-      const playerBombs = playerData.filter(d => d.damageType === 'Bomb')
-      
-      const clusterFiltered = clusterData.filter(d => !isLastHit(d, clusterData))
-      const guildFiltered = guildData.filter(d => !isLastHit(d, guildData))
-
-      // Calculate cluster and guild averages
-      const clusterAverage = clusterFiltered.length > 0 ? 
-        clusterFiltered.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterFiltered.length : 0
-      const guildAverage = guildFiltered.length > 0 ? 
-        guildFiltered.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / guildFiltered.length : 0
-
+    if (playerData && playerData.length > 0) {
+      // Calculate cluster average damage per hit (all guilds, same season)
+      const clusterHits = clusterData?.filter(d => d.damageDealt > 0) || []
+      const clusterAverage = clusterHits.length > 0 ? 
+        clusterHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterHits.length : 0
       setClusterAvg(clusterAverage)
+
+      // Calculate guild average damage per hit (same guild, same season)
+      const guildHits = guildData?.filter(d => d.damageDealt > 0) || []
+      const guildAverage = guildHits.length > 0 ? 
+        guildHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / guildHits.length : 0
       setGuildAvg(guildAverage)
 
+      // Get historical seasons
+      const uniqueSeasons = new Set(seasonData?.map(d => d.Season) || [])
+      const historicalSeasons = Array.from(uniqueSeasons).sort()
+
       // Calculate player stats
-      const totalDamage = playerBattles.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
-      const avgDamagePerHit = playerBattles.length > 0 ? totalDamage / playerBattles.length : 0
-      const tokensUsed = playerBattles.length
-      const bombsUsed = playerBombs.length
+      const battleData = playerData.filter(d => d.damageType === 'Battle')
+      const bombData = playerData.filter(d => d.damageType === 'Bomb')
+      
+      const totalDamage = playerData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
+      const tokensUsed = battleData.length
+      const bombsUsed = bombData.length
+      const avgDamagePerHit = tokensUsed > 0 ? totalDamage / tokensUsed : 0
 
       // Boss-specific stats
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number}} = {}
-      
-      playerBattles.forEach(d => {
-        const bossKey = d.encounterId === 0 ? d.Name : `${d.Name} (Prime)`
+      battleData.forEach(d => {
+        const bossKey = d.rarity === 'Legendary' ? 
+          d.Name : `${d.Name} (Prime)`
         if (!bossStats[bossKey]) {
           bossStats[bossKey] = { damage: 0, tokens: 0, avgDamage: 0 }
         }
@@ -297,104 +301,127 @@ const { data: guildData, error: guildError } = await supabase
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
               <div className="text-center p-4 card-modern hover-lift">
-                <div className="stat-display accent-primary">
+                <div className="text-3xl font-bold text-gradient mb-2">
                   {(playerStats.totalDamage / 1000000).toFixed(1)}M
                 </div>
-                <div className="text-sm text-muted font-medium mt-1">Total Damage</div>
+                <div className="text-sm font-medium text-secondary">Total Damage</div>
               </div>
               <div className="text-center p-4 card-modern hover-lift">
-                <div className="stat-display accent-success">
-                  {(playerStats.avgDamagePerHit / 1000000).toFixed(2)}M
+                <div className="text-3xl font-bold accent-warning mb-2">
+                  {(playerStats.avgDamagePerHit / 1000).toFixed(0)}K
                 </div>
-                <div className="text-sm text-muted font-medium mt-1">Avg per Hit</div>
+                <div className="text-sm font-medium text-secondary">Avg Per Hit</div>
               </div>
               <div className="text-center p-4 card-modern hover-lift">
-                <div className="stat-display accent-purple">
+                <div className="text-3xl font-bold accent-cyan mb-2">
                   {playerStats.tokensUsed}
                 </div>
-                <div className="text-sm text-muted font-medium mt-1">Tokens Used</div>
+                <div className="text-sm font-medium text-secondary">Tokens Used</div>
               </div>
               <div className="text-center p-4 card-modern hover-lift">
-                <div className="stat-display accent-danger">
+                <div className="text-3xl font-bold accent-purple mb-2">
                   {playerStats.bombsUsed}
                 </div>
-                <div className="text-sm text-muted font-medium mt-1">Bombs Used</div>
+                <div className="text-sm font-medium text-secondary">Bombs Used</div>
               </div>
             </div>
           </div>
 
-          {/* Performance vs Averages */}
+          {/* Performance Comparison */}
           <div className="card-elevated p-8">
             <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-              📈 Performance Analysis
+              📈 Performance vs Averages
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className={`p-6 rounded-xl border-2 ${getPerformanceBadge(playerStats.vsClusterAvg)} hover-lift`}>
-                <div className="text-center">
-                  <div className={`stat-large ${getPerformanceColor(playerStats.vsClusterAvg)}`}>
-                    {playerStats.vsClusterAvg >= 0 ? '+' : ''}{playerStats.vsClusterAvg.toFixed(1)}%
-                  </div>
-                  <div className="text-sm text-secondary font-semibold mt-2">vs Cluster Average</div>
-                  <div className="text-xs text-muted font-mono mt-1">
-                    Baseline: {(clusterAvg / 1000000).toFixed(2)}M
-                  </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="p-6 card-modern hover-lift">
+                <div className="flex justify-between items-center mb-4">
+                  <span className="font-semibold text-secondary">vs Cluster Average</span>
+                  <span className={`badge ${getPerformanceBadge(playerStats.vsClusterAvg)}`}>
+                    {playerStats.vsClusterAvg > 0 ? '+' : ''}{playerStats.vsClusterAvg.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="progress-modern">
+                  <div 
+                    className={`progress-fill ${playerStats.vsClusterAvg >= 0 ? 'progress-fill-success' : 'progress-fill-danger'}`}
+                    style={{ 
+                      width: `${Math.min(Math.abs(playerStats.vsClusterAvg), 50)}%` 
+                    }}
+                  />
+                </div>
+                <div className="text-xs text-secondary mt-2">
+                  Cluster Avg: {(clusterAvg / 1000).toFixed(0)}K per hit
                 </div>
               </div>
-              <div className={`p-6 rounded-xl border-2 ${getPerformanceBadge(playerStats.vsGuildAvg)} hover-lift`}>
-                <div className="text-center">
-                  <div className={`stat-large ${getPerformanceColor(playerStats.vsGuildAvg)}`}>
-                    {playerStats.vsGuildAvg >= 0 ? '+' : ''}{playerStats.vsGuildAvg.toFixed(1)}%
-                  </div>
-                  <div className="text-sm text-secondary font-semibold mt-2">vs Guild Average</div>
-                  <div className="text-xs text-muted font-mono mt-1">
-                    Baseline: {(guildAvg / 1000000).toFixed(2)}M
-                  </div>
+
+              <div className="p-6 card-modern hover-lift">
+                <div className="flex justify-between items-center mb-4">
+                  <span className="font-semibold text-secondary">vs Guild Average</span>
+                  <span className={`badge ${getPerformanceBadge(playerStats.vsGuildAvg)}`}>
+                    {playerStats.vsGuildAvg > 0 ? '+' : ''}{playerStats.vsGuildAvg.toFixed(1)}%
+                  </span>
+                </div>
+                <div className="progress-modern">
+                  <div 
+                    className={`progress-fill ${playerStats.vsGuildAvg >= 0 ? 'progress-fill-success' : 'progress-fill-danger'}`}
+                    style={{ 
+                      width: `${Math.min(Math.abs(playerStats.vsGuildAvg), 50)}%` 
+                    }}
+                  />
+                </div>
+                <div className="text-xs text-secondary mt-2">
+                  Guild Avg: {(guildAvg / 1000).toFixed(0)}K per hit
                 </div>
               </div>
             </div>
           </div>
 
           {/* Boss Performance */}
-          <div className="card-elevated p-8">
-            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-              🎯 Boss Performance Breakdown
-            </h3>
-            <div className="space-y-4">
-              {Object.entries(playerStats.bossStats)
-                .sort((a, b) => b[1].avgDamage - a[1].avgDamage)
-                .map(([boss, stats]) => (
-                  <div key={boss} className="card-modern p-4 hover-lift transition-all duration-200">
-                    <div className="flex justify-between items-center mb-3">
-                      <span className="font-semibold text-primary">{boss}</span>
-                      <span className="stat-display accent-warning text-lg">
-                        {(stats.avgDamage / 1000000).toFixed(2)}M
-                      </span>
+          {Object.keys(playerStats.bossStats).length > 0 && (
+            <div className="card-elevated p-8">
+              <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
+                ⚔️ Boss Performance
+              </h3>
+              <div className="space-y-4">
+                {Object.entries(playerStats.bossStats)
+                  .sort(([a], [b]) => a.localeCompare(b))
+                  .map(([boss, stats]) => (
+                    <div key={boss} className="p-4 card-modern hover-lift">
+                      <div className="flex justify-between items-center mb-3">
+                        <span className="font-semibold text-primary">{boss}</span>
+                        <div className="flex items-center space-x-4">
+                          <span className="text-sm text-secondary">
+                            {stats.tokens} tokens
+                          </span>
+                          <span className="stat-display accent-warning">
+                            {(stats.avgDamage / 1000).toFixed(0)}K avg
+                          </span>
+                        </div>
+                      </div>
+                      <div className="progress-modern">
+                        <div 
+                          className="progress-fill-gradient"
+                          style={{ 
+                            width: `${(stats.damage / Math.max(...Object.values(playerStats.bossStats).map(s => s.damage))) * 100}%` 
+                          }}
+                        />
+                      </div>
+                      <div className="text-xs text-secondary mt-2">
+                        Total: {(stats.damage / 1000000).toFixed(2)}M damage
+                      </div>
                     </div>
-                    <div className="flex justify-between text-sm text-secondary font-medium mb-2">
-                      <span>⚔️ {stats.tokens} attacks</span>
-                      <span>💀 {(stats.damage / 1000000).toFixed(1)}M total</span>
-                    </div>
-                    <div className="progress-modern">
-                      <div 
-                        className="progress-fill"
-                        style={{ 
-                          width: `${(stats.avgDamage / Math.max(...Object.values(playerStats.bossStats).map(b => b.avgDamage))) * 100}%` 
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
+                  ))}
+              </div>
             </div>
-          </div>
+          )}
 
-          {/* Historical Token Usage */}
+          {/* Historical Activity */}
           <div className="card-elevated p-8">
             <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-              📅 Historical Performance
+              📅 Historical Token Usage
             </h3>
             <div className="space-y-4">
               {Object.entries(playerStats.historicalTokens)
-                .sort((a, b) => parseInt(b[0]) - parseInt(a[0]))
+                .sort(([a], [b]) => b.localeCompare(a))
                 .map(([season, tokens]) => (
                   <div key={season} className="flex justify-between items-center p-4 card-modern hover-lift">
                     <span className="font-semibold text-secondary">Season {season}</span>
