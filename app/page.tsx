@@ -43,47 +43,30 @@ export default function Dashboard() {
       console.log('Connection successful:', testData)
       setConnected(true)
 
-      // Try to fetch seasons using the SQL function first
-      console.log('Fetching seasons using SQL function...')
-      const { data: seasons, error: functionError } = await supabase.rpc('get_distinct_seasons')
-      
-      if (functionError) {
-        console.warn('SQL function failed, using fallback:', functionError)
-        
-        // Fallback to direct query
-        const { data: seasonData, error: seasonError } = await supabase
-          .from('EOT_GR_data')
-          .select('Season')
-          .not('Season', 'is', null)
-          .order('Season', { ascending: false })
-          .limit(1000)
+      // Try to fetch seasons using the same query structure
+      const { data: seasonData, error: seasonError } = await supabase
+        .from('EOT_GR_data')
+        .select('Season')
+        .not('Season', 'is', null)
 
-        if (seasonError) {
-          console.error('Season fetch failed:', seasonError)
-        } else {
-          const uniqueSeasons = [...new Set(seasonData.map(s => s.Season))].sort((a, b) => parseInt(b) - parseInt(a))
-          setSeasons(uniqueSeasons)
-          if (uniqueSeasons.length > 0) {
-            setSelectedSeason(uniqueSeasons[0])
-          }
-          console.log('Found seasons (fallback):', uniqueSeasons)
-        }
+      if (seasonError) {
+        console.error('Error fetching seasons:', seasonError)
       } else {
-        // SQL function worked
-        const uniqueSeasons = seasons?.map(s => s.season).sort((a, b) => parseInt(b) - parseInt(a)) || []
-        setSeasons(uniqueSeasons)
-        if (uniqueSeasons.length > 0) {
-          setSelectedSeason(uniqueSeasons[0])
+        const seasonSet = new Set(seasonData?.map(d => d.Season) || [])
+        const seasonList = Array.from(seasonSet).sort()
+        console.log('Found seasons:', seasonList)
+        setSeasons(seasonList)
+        if (seasonList.length > 0 && !selectedSeason) {
+          setSelectedSeason(seasonList[seasonList.length - 1]) // Set to latest season
         }
-        console.log('Found seasons (SQL function):', uniqueSeasons)
       }
-    } catch (err) {
-      console.error('Connection error:', err)
+    } catch (error) {
+      console.error('Connection test failed:', error)
       setConnected(false)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [selectedSeason])
 
   useEffect(() => {
     testConnection()
