@@ -72,9 +72,11 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     const { data, error } = await supabase
       .from('EOT_GR_data')
       .select('displayName')
-      .eq('Guild', selectedGuild)       // Filter by selected guild
-      .eq('Season', selectedSeason)     // Filter by selected season
+      .eq('Guild', selectedGuild)
+      .eq('Season', selectedSeason)
       .neq('displayName', null)
+      // Remove the filters that are preventing players from showing up
+      .limit(10000) // Higher limit to get all players
 
     if (error) {
       console.error('Error fetching players:', error)
@@ -84,6 +86,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     if (data) {
       const uniqueNames = new Set(data.map(d => d.displayName))
       const players = Array.from(uniqueNames).sort()
+      console.log('Found players:', players.length) // Debug log
       setAvailablePlayers(players)
     }
   }
@@ -93,13 +96,14 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     
     setLoading(true)
 
-    // Get player data for current season and guild
+    // Get player data for current season and guild (no heavy filtering for basic stats)
     const { data: playerData, error: playerError } = await supabase
       .from('EOT_GR_data')
       .select('*')
-      .eq('Guild', selectedGuild)       // Filter by selected guild
-      .eq('Season', selectedSeason)     // Filter by selected season
+      .eq('Guild', selectedGuild)
+      .eq('Season', selectedSeason)
       .eq('displayName', selectedPlayer)
+      .limit(5000) // Higher limit for player data
 
     // Get cluster data for averages (SAME SEASON ONLY)
     const { data: clusterData, error: clusterError } = await supabase
