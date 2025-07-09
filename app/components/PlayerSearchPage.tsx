@@ -20,36 +20,6 @@ interface PlayerStats {
   historicalTokens: {[key: string]: number}
 }
 
-// Helper function to calculate SpecialCases (replicate DAX logic exactly)
-const getSpecialCases = (entry: any, allData: any[]) => {
-  if (!entry.damageDealt) return "Crash"
-  
-  // Find all entries for this specific boss encounter
-  const sameEncounterData = allData.filter(d => 
-    d.loopIndex === entry.loopIndex &&
-    d.Name === entry.Name &&
-    d.tier === entry.tier &&
-    d.Season === entry.Season &&
-    d.Guild === entry.Guild
-  )
-  
-  // Find minimum remaining HP for this encounter
-  const minRemainingHp = Math.min(...sameEncounterData.map(d => d.remainingHp || 0))
-  
-  // Count total hits for this encounter
-  const totalHits = sameEncounterData.length
-  
-  // Check if this is a last hit (minimum remaining HP AND Battle damage type)
-  const isLastHit = (entry.remainingHp === minRemainingHp && entry.damageType === 'Battle')
-  
-  // Check if this is a one shot (last hit with only 1 total hit)
-  const isOneShot = (isLastHit && totalHits === 1)
-  
-  if (isOneShot) return "One Shot"
-  if (isLastHit) return "Last Hit"
-  return "Standard"
-}
-
 export default function PlayerSearchPage({ selectedGuild, selectedSeason }: PlayerSearchPageProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState('')
@@ -106,36 +76,40 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     console.log('Fetching stats for:', selectedPlayer, selectedGuild, selectedSeason)
 
     try {
-      // Get ALL data for calculations - no filtering at database level for SpecialCases
+      // Get ALL cluster data - simplified query
       const { data: allClusterData } = await supabase
         .from('EOT_GR_data')
         .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUsage, loopIndex, tier, Season, Guild')
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
-        .gte('tier', 4)  // Legendary tier
+        .gte('tier', 4)
         .gt('damageDealt', 0)
-        .limit(50000)
+        .not('Name', 'is', null)
+        .limit(100000)
 
+      // Get ALL guild data - simplified query
       const { data: allGuildData } = await supabase
         .from('EOT_GR_data')
         .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, overallTokenUsage, loopIndex, tier, Season, Guild')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
-        .gte('tier', 4)  // Legendary tier
+        .gte('tier', 4)
         .gt('damageDealt', 0)
-        .limit(50000)
+        .not('Name', 'is', null)
+        .limit(100000)
 
+      // Get ALL player data
       const { data: allPlayerData, error: playerError } = await supabase
         .from('EOT_GR_data')
         .select('*')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('displayName', selectedPlayer)
-        .gte('tier', 4)  // Legendary tier
+        .gte('tier', 4)
         .limit(10000)
 
-      console.log('Player data found:', allPlayerData?.length || 0)
+      console.log('Data loaded - Cluster:', allClusterData?.length, 'Guild:', allGuildData?.length, 'Player:', allPlayerData?.length)
 
       if (playerError) {
         console.error('Error fetching player data:', playerError)
@@ -164,31 +138,17 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         .in('Season', pastSeasons)
         .limit(10000)
 
-      // Apply SpecialCases logic to all datasets - this is crucial for accurate filtering
-      const clusterDataWithSpecialCases = allClusterData?.map(d => ({
-        ...d,
-        specialCases: getSpecialCases(d, allClusterData)
-      })) || []
-
-      const guildDataWithSpecialCases = allGuildData?.map(d => ({
-        ...d,
-        specialCases: getSpecialCases(d, allGuildData)
-      })) || []
-
-      const playerDataWithSpecialCases = allPlayerData.map(d => ({
-        ...d,
-        specialCases: getSpecialCases(d, allPlayerData)
-      }))
-
-      // Filter out "Last Hit" entries (matching DAX logic: SpecialCases <> "Last Hit")
-      const filteredClusterData = clusterDataWithSpecialCases.filter(d => 
-        d.specialCases !== "Last Hit" && d.damageType === 'Battle'
-      )
-      const filteredGuildData = guildDataWithSpecialCases.filter(d => 
-        d.specialCases !== "Last Hit" && d.damageType === 'Battle'
-      )
-      const filteredPlayerBattleData = playerDataWithSpecialCases.filter(d => 
-        d.damageType === 'Battle' && d.specialCases !== "Last Hit"
+      // Simple filtering - just exclude remainingHp = 0 (last hits)
+      const filteredClusterData = allClusterData?.filter(d => 
+        d.remainingHp !== 0 && d.damageDealt > 0 && d.Name
+      ) || []
+      
+      const filteredGuildData = allGuildData?.filter(d => 
+        d.remainingHp !== 0 && d.damageDealt > 0 && d.Name
+      ) || []
+      
+      const filteredPlayerBattleData = allPlayerData.filter(d => 
+        d.damageType === 'Battle' && d.remainingHp !== 0 && d.damageDealt > 0
       )
 
       console.log('Filtered data counts - Cluster:', filteredClusterData.length, 'Guild:', filteredGuildData.length, 'Player Battle:', filteredPlayerBattleData.length)
@@ -206,7 +166,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredClusterData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.overallTokenUsage || '0'
+          const bossRank = d.overallTokenUsage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
           
           if (d.encounterId === 0) {
             if (!clusterBossData[bossName]) clusterBossData[bossName] = {}
@@ -243,7 +203,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredGuildData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.overallTokenUsage || '0'
+          const bossRank = d.overallTokenUsage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
           
           if (d.encounterId === 0) {
             if (!guildBossData[bossName]) guildBossData[bossName] = {}
@@ -290,7 +250,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       console.log('Averages - Cluster:', clusterAverage, 'Guild:', guildAverage)
 
       // Calculate player stats from properly filtered data
-      const bombData = playerDataWithSpecialCases.filter(d => d.damageType === 'Bomb')
+      const bombData = allPlayerData.filter(d => d.damageType === 'Bomb')
       
       const totalBattleDamage = filteredPlayerBattleData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const totalBombDamage = bombData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
@@ -301,7 +261,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       console.log('Player stats:', { totalDamage, totalBattleDamage, tokensUsed, bombsUsed, avgDamagePerHit })
 
-      // Boss and Prime stats with proper comparisons matching Power BI logic
+      // Boss and Prime stats with proper comparisons
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
       const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
       
@@ -331,7 +291,9 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
         
         const playerBossData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId === 0)
-        const mostCommonRank = playerBossData.length > 0 ? playerBossData[0].overallTokenUsage || '0' : '0'
+        const mostCommonRank = playerBossData.length > 0 ? 
+          (playerBossData[0].overallTokenUsage || (playerBossData[0].tier >= 4 ? playerBossData[0].Name : "Non-Leg.")) : 
+          boss
         const comparisonKey = `${boss}_${mostCommonRank}`
         
         const clusterAvg = clusterBossAverages[comparisonKey] || 0
@@ -339,6 +301,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const guildAvg = guildBossAverages[comparisonKey] || 0
         stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
+        
+        console.log(`Boss ${boss}: player ${stats.avgDamage}, cluster ${clusterAvg}, guild ${guildAvg}`)
       })
 
       // Calculate averages and comparisons for primes using the proper key format
@@ -347,7 +311,9 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         stats.avgDamage = stats.tokens > 0 ? stats.damage / stats.tokens : 0
         
         const playerPrimeData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId > 0)
-        const mostCommonRank = playerPrimeData.length > 0 ? playerPrimeData[0].overallTokenUsage || '0' : '0'
+        const mostCommonRank = playerPrimeData.length > 0 ? 
+          (playerPrimeData[0].overallTokenUsage || "Leg. Primes") : 
+          "Leg. Primes"
         const comparisonKey = `${boss}_${mostCommonRank}`
         
         const clusterAvg = clusterPrimeAverages[comparisonKey] || 0
@@ -355,6 +321,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const guildAvg = guildPrimeAverages[comparisonKey] || 0
         stats.vsGuildAvg = guildAvg > 0 ? ((stats.avgDamage / guildAvg) - 1) * 100 : 0
+        
+        console.log(`Prime ${boss}: player ${stats.avgDamage}, cluster ${clusterAvg}, guild ${guildAvg}`)
       })
 
       // Historical tokens by season
@@ -367,6 +335,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       // Calculate vs averages using battle damage average only
       const vsClusterAvg = clusterAverage > 0 ? ((avgDamagePerHit / clusterAverage) - 1) * 100 : 0
       const vsGuildAvg = guildAverage > 0 ? ((avgDamagePerHit / guildAverage) - 1) * 100 : 0
+
+      console.log('Final performance vs averages:', { vsClusterAvg, vsGuildAvg })
 
       const finalStats = {
         totalDamage,
