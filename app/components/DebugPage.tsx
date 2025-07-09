@@ -21,7 +21,7 @@ interface AverageData {
   average: number
 }
 
-const GUILD_COLORS = {
+const GUILD_COLORS: { [key: string]: string } = {
   'IW': '#EF4444', // Red
   'AL': '#3B82F6', // Blue  
   'IH': '#10B981', // Green
@@ -234,11 +234,11 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
     }
   }
 
-  // Prepare chart data
+  // Prepare chart data with TypeScript-safe color access
   const guildCountData = Object.entries(data?.guildCounts || {}).map(([guild, count]) => ({
     guild,
     count: count as number,
-    color: guild === selectedGuild ? GUILD_COLORS[guild] || '#EF4444' : '#94A3B8',
+    color: guild === selectedGuild ? (GUILD_COLORS[guild] || '#EF4444') : '#94A3B8',
     percentage: 0
   }))
 
@@ -250,8 +250,8 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
 
   // Guild performance data
   const guildPerformanceData = allGuildAverages.map(guildData => {
-    const totalDamage = guildData.averages.reduce((sum, avg) => sum + (avg.average * avg.count), 0)
-    const totalHits = guildData.averages.reduce((sum, avg) => sum + avg.count, 0)
+    const totalDamage = guildData.averages.reduce((sum: number, avg: any) => sum + (avg.average * avg.count), 0)
+    const totalHits = guildData.averages.reduce((sum: number, avg: any) => sum + avg.count, 0)
     const overallAverage = totalHits > 0 ? totalDamage / totalHits : 0
     
     return {
