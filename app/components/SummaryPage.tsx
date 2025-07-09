@@ -75,103 +75,67 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
 
       // DYNAMIC: Get unique boss names from the data
       const mainBossData = battleData.filter(d => d.encounterId === 0) // Main bosses only
-      const uniqueBosses = [...new Set(mainBossData.map(d => d.Name))].filter(Boolean)
+      const bossNamesSet = new Set(mainBossData.map(d => d.Name))
+      const uniqueBosses = Array.from(bossNamesSet).filter(Boolean)
       
       // Calculate boss averages and token usage dynamically
       const bossAvg: {[key: string]: number} = {}
-      const bossTokenData: BossTokenUsage[] = []
-      const bossTokenCounts: {[key: string]: number} = {}
+      const bossTokens: BossTokenUsage[] = []
       
-      // Process each unique boss found in the data
       uniqueBosses.forEach(bossName => {
-        const bossData = battleData.filter(d => 
-          d.Name === bossName && d.encounterId === 0 // Main boss only
-        )
+        const bossData = battleData.filter(d => d.Name === bossName)
+        const bossTokenCount = bossData.length
+        const totalBossDamage = bossData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
         
-        if (bossData.length > 0) {
-          // Create display name with set level (L1, L2, etc.)
-          const setLevel = bossData[0]?.set !== undefined ? `L${parseInt(bossData[0].set) + 1} ` : ''
-          const displayName = `${setLevel}${bossName}`
-          
-          bossAvg[displayName] = bossData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / bossData.length
-          bossTokenCounts[displayName] = bossData.length
-        }
-      })
-
-      // Add prime tokens
-      const primeTokens = primeData.length
-      if (primeTokens > 0) {
-        bossTokenCounts['Primes'] = primeTokens
-      }
-
-      // Calculate percentages and per-loop averages
-      Object.entries(bossTokenCounts).forEach(([boss, tokens]) => {
-        const percentage = totalTokens > 0 ? (tokens / totalTokens) * 100 : 0
-        const avgPerLoop = completedLoops > 0 ? tokens / completedLoops : 0
+        bossAvg[bossName] = bossTokenCount > 0 ? totalBossDamage / bossTokenCount : 0
         
-        bossTokenData.push({
-          bossName: boss,
-          tokensUsed: tokens,
-          percentage,
-          avgPerLoop
+        bossTokens.push({
+          bossName,
+          tokensUsed: bossTokenCount,
+          percentage: totalTokens > 0 ? (bossTokenCount / totalTokens) * 100 : 0,
+          avgPerLoop: completedLoops > 0 ? bossTokenCount / completedLoops : 0
         })
       })
 
-      // Sort by token usage
-      bossTokenData.sort((a, b) => b.tokensUsed - a.tokensUsed)
-
-      // Calculate tokens per boss per loop (average across all main bosses)
-      const mainBossTokens = battleData.filter(d => d.encounterId === 0).length
+      // Tokens per boss per loop
       const tokensPerBossPerLoop = completedLoops > 0 && uniqueBosses.length > 0 ? 
-        mainBossTokens / (completedLoops * uniqueBosses.length) : 0
+        totalTokens / (completedLoops * uniqueBosses.length) : 0
 
       setStats({
         completedLoops,
-        totalDamage,
+        totalDamage: totalDamage + totalBombDamage,
         totalTokens,
         totalBombs: bombData?.length || 0,
         avgDamagePerPrime,
         tokensPerLoop,
         tokensPerBossPerLoop
       })
-      setBossAverages(bossAvg)
-      setBossTokenUsage(bossTokenData)
-    }
-    
-    setLoading(false)
-  }
 
-  // Show message if no guild or season selected
-  if (!selectedGuild || !selectedSeason) {
-    return (
-      <div className="container-modern py-8 sm:py-16">
-        <div className="text-center">
-          <div className="text-4xl sm:text-6xl mb-4">⚙️</div>
-          <h2 className="heading-secondary mb-2">Select Guild and Season</h2>
-          <p className="text-secondary">Please select both a guild and season from the dropdown menus above to view the summary.</p>
-        </div>
-      </div>
-    )
+      setBossAverages(bossAvg)
+      setBossTokenUsage(bossTokens.sort((a, b) => b.tokensUsed - a.tokensUsed))
+    }
+
+    setLoading(false)
   }
 
   if (loading) {
     return (
-      <div className="container-modern py-8 sm:py-16">
-        <div className="flex flex-col items-center justify-center">
-          <div className="spinner-modern w-8 h-8 mb-4"></div>
-          <p className="text-secondary">Loading guild raid data...</p>
-        </div>
+      <div className="flex justify-center p-16">
+        <div className="spinner-modern w-8 h-8"></div>
       </div>
     )
   }
 
   return (
-    <div className="container-modern py-2 sm:py-3 space-y-2 sm:space-y-3">
-      {/* Header - More Compact */}
+    <div className="container-modern py-8 space-y-8 animate-fade-in">
+      {/* Header */}
       <div className="text-center">
-        <h2 className="text-lg sm:text-xl font-bold text-gray-900 mb-0.5">Guild Raid Summary</h2>
-        <p className="text-xs text-secondary">Season {selectedSeason} - {selectedGuild}</p>
-        <p className="text-xs text-muted">Legendary Tier Only (Tier 4+)</p>
+        <h2 className="text-3xl font-bold text-gradient mb-3">
+          Guild Raid Summary
+        </h2>
+        <p className="text-secondary font-medium">
+          Season {selectedSeason} • {selectedGuild} Performance Overview
+        </p>
       </div>
 
       {/* Main Stats - Responsive Grid */}
@@ -235,55 +199,34 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
               {/* Modern Progress Bar */}
               <div className="progress-modern">
                 <div 
-                  className="progress-fill"
+                  className="progress-fill-gradient"
                   style={{ width: `${boss.percentage}%` }}
                 />
               </div>
               
-              <div className="text-xs text-muted text-right">
-                {boss.avgPerLoop.toFixed(1)} per loop
+              <div className="text-xs text-muted">
+                Avg: {boss.avgPerLoop.toFixed(1)} per loop
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* Boss Averages - More Compact */}
-      <div className="card-modern p-3 sm:p-4">
-        <h3 className="text-sm sm:text-base font-semibold text-gray-700 mb-2">Average Boss Damage</h3>
-        <div className="space-y-1">
+      {/* Boss Performance Averages */}
+      <div className="card-modern p-4">
+        <h3 className="text-lg font-semibold text-primary mb-4">Boss Damage Averages</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {Object.entries(bossAverages)
-            .filter(([_, avg]) => avg > 0)
-            .sort((a, b) => b[1] - a[1])
+            .sort(([,a], [,b]) => b - a)
             .map(([boss, avg]) => (
-            <div key={boss} className="flex items-center justify-between p-2 bg-gray-50 rounded-md hover:bg-gray-100 transition-colors">
-              <span className="font-medium text-primary text-xs sm:text-sm">{boss}</span>
-              <span className="stat-display-compact accent-blue">{(avg / 1000000).toFixed(2)}M</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Performance Summary - More Compact */}
-      <div className="card-modern p-3 sm:p-4">
-        <h3 className="text-sm sm:text-base font-semibold text-gray-700 mb-2">Performance Summary</h3>
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          <div className="stat-card-compact">
-            <div className="text-xs font-semibold text-secondary mb-0.5">Avg per Token</div>
-            <div className="stat-display-compact accent-blue">{stats.totalTokens > 0 ? ((stats.totalDamage / stats.totalTokens) / 1000).toFixed(0) : 0}K</div>
-          </div>
-          <div className="stat-card-compact">
-            <div className="text-xs font-semibold text-secondary mb-0.5">Loops Done</div>
-            <div className="stat-display-compact accent-green">{stats.completedLoops}</div>
-          </div>
-          <div className="stat-card-compact">
-            <div className="text-xs font-semibold text-secondary mb-0.5">Bombs/Loop</div>
-            <div className="stat-display-compact accent-orange">{stats.completedLoops > 0 ? (stats.totalBombs / stats.completedLoops).toFixed(1) : 0}</div>
-          </div>
-          <div className="stat-card-compact">
-            <div className="text-xs font-semibold text-secondary mb-0.5">Battle Efficiency</div>
-            <div className="stat-display-compact accent-purple">{stats.completedLoops > 0 ? ((stats.totalDamage / 1000000) / stats.completedLoops).toFixed(1) : 0}M/loop</div>
-          </div>
+              <div key={boss} className="card-modern p-3 hover-lift">
+                <div className="text-sm font-medium text-primary mb-1">{boss}</div>
+                <div className="stat-display-compact accent-warning">
+                  {(avg / 1000).toFixed(0)}K
+                </div>
+                <div className="text-xs text-muted">avg per token</div>
+              </div>
+            ))}
         </div>
       </div>
     </div>
