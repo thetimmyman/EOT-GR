@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend } from 'recharts'
 
 interface DebugPageProps {
   selectedGuild: string
@@ -225,15 +224,7 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
         guildCounts: Object.fromEntries(guildCounts)
       })
 
-      console.log('🔧 Enhanced connection successful!', {
-        seasons,
-        allGuilds,
-        damageTypes,
-        rarities,
-        totalRecords: allMetaData?.length || 0,
-        currentSeasonRecords: allData?.length || 0,
-        guildCounts: Object.fromEntries(guildCounts)
-      })
+      console.log('🔧 Enhanced connection successful!')
 
     } catch (err) {
       console.error('🔧 Connection failed:', err)
@@ -247,50 +238,17 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
   const guildCountData = Object.entries(data?.guildCounts || {}).map(([guild, count]) => ({
     guild,
     count: count as number,
-    fill: guild === selectedGuild ? GUILD_COLORS[guild] || '#EF4444' : '#94A3B8'
+    color: guild === selectedGuild ? GUILD_COLORS[guild] || '#EF4444' : '#94A3B8',
+    percentage: 0
   }))
 
-  // Prepare multi-guild boss comparison data
-  const bossComparisonData = clusterAverages.slice(0, 8).map(boss => {
-    const result: any = {
-      boss: boss.bossName.length > 15 ? boss.bossName.substring(0, 15) + '...' : boss.bossName,
-      fullBoss: boss.bossName,
-      tokenUsage: boss.tokenUsage,
-      clusterAvg: Math.round(boss.average / 1000)
-    }
-
-    // Add each guild's performance for this boss
-    allGuildAverages.forEach(guildData => {
-      const guildBoss = guildData.averages.find(avg => 
-        avg.bossName === boss.bossName && avg.tokenUsage === boss.tokenUsage
-      )
-      if (guildBoss && guildBoss.count >= 3) { // Only show if guild has at least 3 attempts
-        result[guildData.guild] = Math.round(guildBoss.average / 1000)
-      }
-    })
-
-    return result
+  // Calculate percentages for visualization
+  const maxGuildCount = Math.max(...guildCountData.map(d => d.count), 1)
+  guildCountData.forEach(d => {
+    d.percentage = (d.count / maxGuildCount) * 100
   })
 
-  // Performance summary for selected guild
-  const performanceVsCluster = guildAverages.map(guildAvg => {
-    const clusterAvg = clusterAverages.find(c => 
-      c.bossName === guildAvg.bossName && c.tokenUsage === guildAvg.tokenUsage
-    )
-    const vsCluster = clusterAvg && clusterAvg.average > 0 
-      ? ((guildAvg.average / clusterAvg.average) - 1) * 100 
-      : 0
-    
-    return {
-      boss: guildAvg.bossName.length > 15 ? guildAvg.bossName.substring(0, 15) + '...' : guildAvg.bossName,
-      fullBoss: guildAvg.bossName,
-      vsCluster: Math.round(vsCluster * 10) / 10,
-      guildCount: guildAvg.count,
-      clusterCount: clusterAvg?.count || 0
-    }
-  }).filter(d => d.guildCount >= 3) // Only show bosses with sufficient data
-
-  // Top performing guilds overall
+  // Guild performance data
   const guildPerformanceData = allGuildAverages.map(guildData => {
     const totalDamage = guildData.averages.reduce((sum, avg) => sum + (avg.average * avg.count), 0)
     const totalHits = guildData.averages.reduce((sum, avg) => sum + avg.count, 0)
@@ -300,10 +258,50 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
       guild: guildData.guild,
       averageDamage: Math.round(overallAverage / 1000),
       totalHits: totalHits,
-      totalRecords: guildData.totalRecords,
-      fill: GUILD_COLORS[guildData.guild] || '#94A3B8'
+      color: GUILD_COLORS[guildData.guild] || '#94A3B8',
+      percentage: 0
     }
   }).sort((a, b) => b.averageDamage - a.averageDamage)
+
+  const maxPerformance = Math.max(...guildPerformanceData.map(d => d.averageDamage), 1)
+  guildPerformanceData.forEach(d => {
+    d.percentage = (d.averageDamage / maxPerformance) * 100
+  })
+
+  // Performance vs cluster
+  const performanceVsCluster = guildAverages.map(guildAvg => {
+    const clusterAvg = clusterAverages.find(c => 
+      c.bossName === guildAvg.bossName && c.tokenUsage === guildAvg.tokenUsage
+    )
+    const vsCluster = clusterAvg && clusterAvg.average > 0 
+      ? ((guildAvg.average / clusterAvg.average) - 1) * 100 
+      : 0
+    
+    return {
+      boss: guildAvg.bossName.length > 12 ? guildAvg.bossName.substring(0, 12) + '...' : guildAvg.bossName,
+      fullBoss: guildAvg.bossName,
+      vsCluster: Math.round(vsCluster * 10) / 10,
+      guildCount: guildAvg.count,
+      isPositive: vsCluster >= 0
+    }
+  }).filter(d => d.guildCount >= 3)
+
+  // Top bosses for pie chart simulation
+  const topBosses = clusterAverages
+    .sort((a, b) => b.average - a.average)
+    .slice(0, 6)
+    .map((boss, index) => ({
+      name: boss.bossName.length > 15 ? boss.bossName.substring(0, 15) + '...' : boss.bossName,
+      damage: Math.round(boss.average / 1000),
+      count: boss.count,
+      color: Object.values(GUILD_COLORS)[index] || '#94A3B8',
+      percentage: 0
+    }))
+
+  const maxBossDamage = Math.max(...topBosses.map(d => d.damage), 1)
+  topBosses.forEach(d => {
+    d.percentage = (d.damage / maxBossDamage) * 100
+  })
 
   if (loading) {
     return (
@@ -350,124 +348,130 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
             {/* Charts Grid */}
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
               
-              {/* Guild Data Distribution */}
+              {/* Guild Data Distribution - CSS Bar Chart */}
               <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-                <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+                <h3 className="text-xl font-bold mb-6 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
                   📊 Guild Data Distribution - Season {selectedSeason}
                 </h3>
-                <ResponsiveContainer width="100%" height={350}>
-                  <BarChart data={guildCountData}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis dataKey="guild" tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <Tooltip 
-                      contentStyle={{ 
-                        backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                        border: 'none', 
-                        borderRadius: '12px',
-                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                      }}
-                      formatter={(value) => [`${value} records`, 'Data Points']}
-                    />
-                    <Bar dataKey="count" radius={[4, 4, 0, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
+                <div className="space-y-4">
+                  {guildCountData.map((guild, index) => (
+                    <div key={guild.guild} className="flex items-center space-x-4">
+                      <div className="w-12 text-sm font-bold text-center">{guild.guild}</div>
+                      <div className="flex-1 bg-gray-200 rounded-full h-8 overflow-hidden relative">
+                        <div 
+                          className="h-full rounded-full transition-all duration-1000 ease-out flex items-center justify-end pr-3 text-white text-sm font-bold"
+                          style={{ 
+                            width: `${guild.percentage}%`,
+                            background: `linear-gradient(90deg, ${guild.color}dd, ${guild.color})`,
+                            animationDelay: `${index * 100}ms`
+                          }}
+                        >
+                          {guild.count}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
               </div>
 
-              {/* Guild Performance Ranking */}
+              {/* Guild Performance Ranking - CSS Bar Chart */}
               <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-                <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">
+                <h3 className="text-xl font-bold mb-6 bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">
                   🏆 Guild Performance Ranking
                 </h3>
-                <ResponsiveContainer width="100%" height={350}>
-                  <BarChart data={guildPerformanceData} layout="horizontal">
-                    <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                    <XAxis type="number" tick={{ fontSize: 12 }} />
-                    <YAxis dataKey="guild" type="category" tick={{ fontSize: 12 }} width={40} />
-                    <Tooltip 
-                      contentStyle={{ 
-                        backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                        border: 'none', 
-                        borderRadius: '12px',
-                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                      }}
-                      formatter={(value, name, props) => [
-                        `${value}K avg damage`,
-                        `${props.payload.totalHits} total hits`
-                      ]}
-                    />
-                    <Bar dataKey="averageDamage" radius={[0, 4, 4, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-
-            </div>
-
-            {/* Multi-Guild Boss Comparison - Full Width */}
-            <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-              <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-                ⚔️ Multi-Guild Boss Performance Comparison
-              </h3>
-              <div className="text-sm text-gray-600 mb-4">
-                Comparing damage across all guilds for top bosses (only showing guilds with 3+ attempts)
-              </div>
-              <ResponsiveContainer width="100%" height={400}>
-                <BarChart data={bossComparisonData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                  <XAxis dataKey="boss" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={100} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip 
-                    contentStyle={{ 
-                      backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                      border: 'none', 
-                      borderRadius: '12px',
-                      boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                    }}
-                    formatter={(value, name) => [`${value}K`, name === 'clusterAvg' ? 'Cluster Avg' : `${name} Guild`]}
-                  />
-                  <Legend />
-                  <Bar dataKey="clusterAvg" fill="#94A3B8" name="Cluster Average" />
-                  {Object.keys(GUILD_COLORS).map(guild => (
-                    <Bar 
-                      key={guild} 
-                      dataKey={guild} 
-                      fill={GUILD_COLORS[guild]} 
-                      name={guild}
-                    />
+                <div className="space-y-4">
+                  {guildPerformanceData.map((guild, index) => (
+                    <div key={guild.guild} className="flex items-center space-x-4">
+                      <div className="w-12 text-sm font-bold text-center">{guild.guild}</div>
+                      <div className="flex-1 bg-gray-200 rounded-full h-8 overflow-hidden relative">
+                        <div 
+                          className="h-full rounded-full transition-all duration-1000 ease-out flex items-center justify-end pr-3 text-white text-sm font-bold"
+                          style={{ 
+                            width: `${guild.percentage}%`,
+                            background: `linear-gradient(90deg, ${guild.color}dd, ${guild.color})`,
+                            animationDelay: `${index * 100}ms`
+                          }}
+                        >
+                          {guild.averageDamage}K
+                        </div>
+                      </div>
+                    </div>
                   ))}
-                </BarChart>
-              </ResponsiveContainer>
+                </div>
+              </div>
+
             </div>
 
-            {/* Performance vs Cluster for Selected Guild */}
+            {/* Top Damage Bosses - CSS Pie Chart Simulation */}
             <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-              <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+              <h3 className="text-xl font-bold mb-6 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+                🎯 Top Damage Bosses
+              </h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {topBosses.map((boss, index) => (
+                  <div key={boss.name} className="bg-gradient-to-br from-gray-50 to-white p-4 rounded-xl border shadow-sm">
+                    <div className="flex items-center space-x-3">
+                      <div 
+                        className="w-4 h-4 rounded-full"
+                        style={{ backgroundColor: boss.color }}
+                      ></div>
+                      <div className="flex-1">
+                        <div className="font-medium text-sm">{boss.name}</div>
+                        <div className="text-xs text-gray-600">{boss.count} hits</div>
+                      </div>
+                      <div className="text-lg font-bold" style={{ color: boss.color }}>
+                        {boss.damage}K
+                      </div>
+                    </div>
+                    <div className="mt-2 bg-gray-200 rounded-full h-2 overflow-hidden">
+                      <div 
+                        className="h-full rounded-full transition-all duration-1000 ease-out"
+                        style={{ 
+                          width: `${boss.percentage}%`,
+                          background: `linear-gradient(90deg, ${boss.color}dd, ${boss.color})`,
+                          animationDelay: `${index * 150}ms`
+                        }}
+                      ></div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Performance vs Cluster */}
+            <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
+              <h3 className="text-xl font-bold mb-6 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
                 📈 {selectedGuild} Performance vs Cluster Average
               </h3>
-              <ResponsiveContainer width="100%" height={350}>
-                <BarChart data={performanceVsCluster}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                  <XAxis dataKey="boss" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={100} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <Tooltip 
-                    contentStyle={{ 
-                      backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                      border: 'none', 
-                      borderRadius: '12px',
-                      boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                    }}
-                    formatter={(value, name, props) => [
-                      `${value}%`,
-                      `${props.payload.guildCount} attempts`
-                    ]}
-                  />
-                  <Bar 
-                    dataKey="vsCluster" 
-                    radius={[4, 4, 0, 0]}
-                    fill={(entry) => entry.vsCluster >= 0 ? '#10B981' : '#EF4444'}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
+              <div className="space-y-4">
+                {performanceVsCluster.map((perf, index) => (
+                  <div key={perf.boss} className="flex items-center space-x-4">
+                    <div className="w-32 text-sm font-medium truncate" title={perf.fullBoss}>{perf.boss}</div>
+                    <div className="flex-1 bg-gray-200 rounded-full h-6 overflow-hidden relative">
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-0.5 h-full bg-gray-400"></div>
+                      </div>
+                      <div 
+                        className={`h-full transition-all duration-1000 ease-out flex items-center text-white text-xs font-bold ${
+                          perf.isPositive ? 'justify-end pr-2' : 'justify-start pl-2'
+                        }`}
+                        style={{ 
+                          width: `${50 + (perf.vsCluster / 100) * 25}%`,
+                          background: perf.isPositive 
+                            ? `linear-gradient(90deg, #10B981dd, #10B981)` 
+                            : `linear-gradient(90deg, #EF4444dd, #EF4444)`,
+                          animationDelay: `${index * 100}ms`,
+                          marginLeft: perf.isPositive ? '0' : 'auto',
+                          marginRight: perf.isPositive ? 'auto' : '0'
+                        }}
+                      >
+                        {perf.vsCluster > 0 ? '+' : ''}{perf.vsCluster}%
+                      </div>
+                    </div>
+                    <div className="w-16 text-xs text-gray-600 text-right">{perf.guildCount} hits</div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             {/* Performance Summary Cards */}
