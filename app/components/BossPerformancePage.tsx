@@ -2,6 +2,12 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  LineChart, Line, AreaChart, Area, ScatterChart, Scatter, ZAxis,
+  ComposedChart, Legend, PieChart, Pie, Cell, RadarChart, PolarGrid, 
+  PolarAngleAxis, PolarRadiusAxis, Radar
+} from 'recharts'
 
 interface BossPerformancePageProps {
   selectedGuild: string
@@ -16,6 +22,7 @@ interface PlayerStats {
   tokenCount: number
   biggestHit: number
   hitCount: number
+  efficiency: number
 }
 
 interface LapData {
@@ -26,7 +33,11 @@ interface LapData {
   bossAvgDamage: number
   prime1AvgDamage: number
   prime2AvgDamage: number
+  totalTokens: number
+  totalDamage: number
 }
+
+const COLORS = ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899']
 
 // Helper function to identify last hits
 const isLastHit = (entry: any, allData: any[]) => {
@@ -52,6 +63,8 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
   const [bossName, setBossName] = useState('')
   const [prime1Name, setPrime1Name] = useState('')
   const [prime2Name, setPrime2Name] = useState('')
+  const [playerComparisonData, setPlayerComparisonData] = useState<any[]>([])
+  const [damageDistributionData, setDamageDistributionData] = useState<any[]>([])
   const [overallStats, setOverallStats] = useState({
     avgDamagePerHit: 0,
     totalBossTokens: 0,
@@ -60,7 +73,9 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
     topDamagePlayer: '',
     topDamageAmount: 0,
     biggestHitPlayer: '',
-    biggestHitAmount: 0
+    biggestHitAmount: 0,
+    avgBossEfficiency: 0,
+    avgPrimeEfficiency: 0
   })
 
   useEffect(() => {
@@ -77,512 +92,447 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
       return
     }
     
-    // Correct filters: Legendary rarity, specific set, Battle damage
-    const { data, error } = await supabase
-      .from('EOT_GR_data')
-      .select('*')
-      .eq('Guild', selectedGuild)
-      .eq('Season', selectedSeason)
-      .eq('rarity', 'Legendary')
-      .eq('set', level - 1)  // L1=0, L2=1, L3=2, L4=3, L5=4
-      .eq('damageType', 'Battle')
-
-    if (error) {
-      console.error('Error fetching level data:', error)
-      setLoading(false)
-      return
-    }
-
-    if (data && data.length > 0) {
-      setLevelData(data)
-      
-      // Extract boss names from the data
-      const bossData = data.filter(d => d.encounterId === 0)
-      const prime1Data = data.filter(d => d.encounterId === 1)
-      const prime2Data = data.filter(d => d.encounterId === 2)
-      
-      // Get most common names for each encounter type
-      const getBossName = (encounterData: any[]) => {
-        const nameCount: {[key: string]: number} = {}
-        encounterData.forEach(d => {
-          nameCount[d.Name] = (nameCount[d.Name] || 0) + 1
-        })
-        return Object.entries(nameCount).sort((a, b) => b[1] - a[1])[0]?.[0] || 'Unknown'
+    try {
+      // Correct boss name mapping for each level
+      const bossNames = {
+        1: 'Ultramarines Captain',
+        2: 'Chaos Lord', 
+        3: 'Tech Marine',
+        4: 'Death Guard',
+        5: 'Space Marine'
       }
       
-      setBossName(getBossName(bossData))
-      setPrime1Name(getBossName(prime1Data))
-      setPrime2Name(getBossName(prime2Data))
+      const currentBossName = bossNames[level as keyof typeof bossNames]
+      setBossName(currentBossName)
       
-      // Filter out last hits for calculations
-      const filteredData = data.filter(d => !isLastHit(d, data))
-      
+      console.log(`Fetching Level ${level} data for ${selectedGuild} Season ${selectedSeason}`)
+      console.log(`Looking for boss: ${currentBossName}`)
+
+      // Get all data for this level (boss + primes)
+      const { data: allLevelData, error } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('Name', currentBossName)
+        .eq('damageType', 'Battle')
+        .gte('tier', 4)
+        .neq('remainingHp', 0)
+        .gt('damageDealt', 0)
+
+      if (error) {
+        console.error('Error fetching level data:', error)
+        setLoading(false)
+        return
+      }
+
+      if (!allLevelData || allLevelData.length === 0) {
+        console.log(`No data found for Level ${level}`)
+        setLevelData([])
+        setLoading(false)
+        return
+      }
+
+      console.log(`Found ${allLevelData.length} records for Level ${level}`)
+      setLevelData(allLevelData)
+
+      // Filter out last hits
+      const filteredData = allLevelData.filter(entry => !isLastHit(entry, allLevelData))
+      console.log(`After filtering last hits: ${filteredData.length} records`)
+
+      // Separate boss and prime data
+      const bossData = filteredData.filter(d => d.encounterId === 0)
+      const prime1Data = filteredData.filter(d => d.encounterId === 1)
+      const prime2Data = filteredData.filter(d => d.encounterId === 2)
+
+      // Set prime names dynamically
+      if (prime1Data.length > 0) setPrime1Name(currentBossName)
+      if (prime2Data.length > 0) setPrime2Name(currentBossName)
+
+      // Calculate player statistics for boss
+      const bossPlayerMap = new Map<string, PlayerStats>()
+      bossData.forEach(entry => {
+        const player = entry.displayName
+        if (!bossPlayerMap.has(player)) {
+          bossPlayerMap.set(player, {
+            displayName: player,
+            avgDamage: 0,
+            totalDamage: 0,
+            tokenCount: 0,
+            biggestHit: 0,
+            hitCount: 0,
+            efficiency: 0
+          })
+        }
+        const stats = bossPlayerMap.get(player)!
+        stats.totalDamage += entry.damageDealt || 0
+        stats.tokenCount += 1
+        stats.hitCount += 1
+        stats.biggestHit = Math.max(stats.biggestHit, entry.damageDealt || 0)
+      })
+
+      // Calculate averages and efficiency for boss
+      const bossPlayers = Array.from(bossPlayerMap.values()).map(player => ({
+        ...player,
+        avgDamage: player.tokenCount > 0 ? player.totalDamage / player.tokenCount : 0,
+        efficiency: player.tokenCount > 0 ? (player.totalDamage / player.tokenCount) / 1000 : 0
+      })).sort((a, b) => b.totalDamage - a.totalDamage)
+
+      setBossPlayerStats(bossPlayers)
+
+      // Similar calculations for primes
+      const calculatePrimeStats = (primeData: any[]) => {
+        const playerMap = new Map<string, PlayerStats>()
+        primeData.forEach(entry => {
+          const player = entry.displayName
+          if (!playerMap.has(player)) {
+            playerMap.set(player, {
+              displayName: player,
+              avgDamage: 0,
+              totalDamage: 0,
+              tokenCount: 0,
+              biggestHit: 0,
+              hitCount: 0,
+              efficiency: 0
+            })
+          }
+          const stats = playerMap.get(player)!
+          stats.totalDamage += entry.damageDealt || 0
+          stats.tokenCount += 1
+          stats.hitCount += 1
+          stats.biggestHit = Math.max(stats.biggestHit, entry.damageDealt || 0)
+        })
+
+        return Array.from(playerMap.values()).map(player => ({
+          ...player,
+          avgDamage: player.tokenCount > 0 ? player.totalDamage / player.tokenCount : 0,
+          efficiency: player.tokenCount > 0 ? (player.totalDamage / player.tokenCount) / 1000 : 0
+        })).sort((a, b) => b.totalDamage - a.totalDamage)
+      }
+
+      setPrime1PlayerStats(calculatePrimeStats(prime1Data))
+      setPrime2PlayerStats(calculatePrimeStats(prime2Data))
+
+      // Calculate lap progression data
+      const maxLoop = Math.max(...filteredData.map(d => d.loopIndex || 0))
+      const lapProgression: LapData[] = []
+
+      for (let loop = 0; loop <= maxLoop; loop++) {
+        const loopData = filteredData.filter(d => d.loopIndex === loop)
+        const loopBoss = loopData.filter(d => d.encounterId === 0)
+        const loopPrime1 = loopData.filter(d => d.encounterId === 1)
+        const loopPrime2 = loopData.filter(d => d.encounterId === 2)
+
+        lapProgression.push({
+          loopIndex: loop + 1,
+          bossTokens: loopBoss.length,
+          prime1Tokens: loopPrime1.length,
+          prime2Tokens: loopPrime2.length,
+          bossAvgDamage: loopBoss.length > 0 ? loopBoss.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / loopBoss.length : 0,
+          prime1AvgDamage: loopPrime1.length > 0 ? loopPrime1.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / loopPrime1.length : 0,
+          prime2AvgDamage: loopPrime2.length > 0 ? loopPrime2.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / loopPrime2.length : 0,
+          totalTokens: loopData.length,
+          totalDamage: loopData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
+        })
+      }
+
+      setLapData(lapProgression)
+
+      // Prepare player comparison data (top 10 players across all encounters)
+      const allPlayerStats = new Map<string, any>()
+      filteredData.forEach(entry => {
+        const player = entry.displayName
+        if (!allPlayerStats.has(player)) {
+          allPlayerStats.set(player, {
+            name: player,
+            bossTokens: 0,
+            bossDamage: 0,
+            primeTokens: 0,
+            primeDamage: 0,
+            totalDamage: 0,
+            biggestHit: 0
+          })
+        }
+        const stats = allPlayerStats.get(player)!
+        if (entry.encounterId === 0) {
+          stats.bossTokens += 1
+          stats.bossDamage += entry.damageDealt || 0
+        } else {
+          stats.primeTokens += 1
+          stats.primeDamage += entry.damageDealt || 0
+        }
+        stats.totalDamage += entry.damageDealt || 0
+        stats.biggestHit = Math.max(stats.biggestHit, entry.damageDealt || 0)
+      })
+
+      const topPlayers = Array.from(allPlayerStats.values())
+        .sort((a, b) => b.totalDamage - a.totalDamage)
+        .slice(0, 10)
+        .map(p => ({
+          ...p,
+          bossAvg: p.bossTokens > 0 ? Math.round(p.bossDamage / p.bossTokens / 1000) : 0,
+          primeAvg: p.primeTokens > 0 ? Math.round(p.primeDamage / p.primeTokens / 1000) : 0,
+          totalDamage: Math.round(p.totalDamage / 1000),
+          biggestHit: Math.round(p.biggestHit / 1000)
+        }))
+
+      setPlayerComparisonData(topPlayers)
+
+      // Calculate damage distribution data
+      const damageRanges = [
+        { range: '0-500K', min: 0, max: 500000, count: 0, color: '#EF4444' },
+        { range: '500K-1M', min: 500000, max: 1000000, count: 0, color: '#F59E0B' },
+        { range: '1M-2M', min: 1000000, max: 2000000, count: 0, color: '#10B981' },
+        { range: '2M-3M', min: 2000000, max: 3000000, count: 0, color: '#3B82F6' },
+        { range: '3M+', min: 3000000, max: Infinity, count: 0, color: '#8B5CF6' }
+      ]
+
+      filteredData.forEach(entry => {
+        const damage = entry.damageDealt || 0
+        const range = damageRanges.find(r => damage >= r.min && damage < r.max)
+        if (range) range.count++
+      })
+
+      setDamageDistributionData(damageRanges.filter(r => r.count > 0))
+
       // Calculate overall stats
       const totalDamage = filteredData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const avgDamagePerHit = filteredData.length > 0 ? totalDamage / filteredData.length : 0
       
-      // Separate data by encounter type
-      const filteredBossData = filteredData.filter(d => d.encounterId === 0)
-      const filteredPrime1Data = filteredData.filter(d => d.encounterId === 1)
-      const filteredPrime2Data = filteredData.filter(d => d.encounterId === 2)
-      
-      const totalBossTokens = filteredBossData.length
-      const totalPrimeTokens = filteredPrime1Data.length + filteredPrime2Data.length
-      const totalTokens = filteredData.length
-      
-      // Find biggest hit across all data (including last hits for this stat)
-      const biggestHit = Math.max(...data.map(d => d.damageDealt || 0))
-      const biggestHitEntry = data.find(d => d.damageDealt === biggestHit)
-      
-      // Calculate player stats for each encounter type
-      const calculatePlayerStats = (encounterData: any[]) => {
-        const playerData: {[key: string]: {
-          totalDamage: number,
-          tokenCount: number,
-          biggestHit: number,
-          hitCount: number,
-          damageSum: number
-        }} = {}
-        
-        encounterData.forEach(d => {
-          const player = d.displayName
-          if (!playerData[player]) {
-            playerData[player] = { 
-              totalDamage: 0, 
-              tokenCount: 0, 
-              biggestHit: 0,
-              hitCount: 0,
-              damageSum: 0
-            }
-          }
-          
-          playerData[player].damageSum += d.damageDealt || 0
-          playerData[player].tokenCount += 1
-          playerData[player].hitCount += 1
-          playerData[player].biggestHit = Math.max(playerData[player].biggestHit, d.damageDealt || 0)
-        })
-        
-        // Include total damage from all hits (including last hits) for each encounter type
-        const allEncounterData = data.filter(d => 
-          encounterData.length > 0 ? d.encounterId === encounterData[0].encounterId : false
-        )
-        allEncounterData.forEach(d => {
-          const player = d.displayName
-          if (playerData[player]) {
-            playerData[player].totalDamage += d.damageDealt || 0
-          }
-        })
-
-        return Object.entries(playerData)
-          .map(([name, stats]) => ({
-            displayName: name,
-            avgDamage: stats.hitCount > 0 ? stats.damageSum / stats.hitCount : 0,
-            totalDamage: stats.totalDamage,
-            tokenCount: stats.tokenCount,
-            biggestHit: stats.biggestHit,
-            hitCount: stats.hitCount
-          }))
-          .sort((a, b) => b.avgDamage - a.avgDamage)
-      }
-
-      // Calculate stats for each encounter type
-      setBossPlayerStats(calculatePlayerStats(filteredBossData))
-      setPrime1PlayerStats(calculatePlayerStats(filteredPrime1Data))
-      setPrime2PlayerStats(calculatePlayerStats(filteredPrime2Data))
-
-      // Find top damage player across all encounters
-      const allPlayerStats = calculatePlayerStats(filteredData)
-      const topDamagePlayer = allPlayerStats.reduce((prev, current) => 
-        current.totalDamage > prev.totalDamage ? current : prev
-      )
-
-      // Calculate lap data (tokens per loopIndex with stacked data)
-      const lapMap: {[key: number]: {
-        bossTokens: number, 
-        prime1Tokens: number, 
-        prime2Tokens: number,
-        bossDamageSum: number,
-        prime1DamageSum: number,
-        prime2DamageSum: number,
-        bossHitCount: number,
-        prime1HitCount: number,
-        prime2HitCount: number
-      }} = {}
-      
-      filteredData.forEach(d => {
-        const lap = d.loopIndex
-        if (!lapMap[lap]) {
-          lapMap[lap] = { 
-            bossTokens: 0, 
-            prime1Tokens: 0, 
-            prime2Tokens: 0,
-            bossDamageSum: 0,
-            prime1DamageSum: 0,
-            prime2DamageSum: 0,
-            bossHitCount: 0,
-            prime1HitCount: 0,
-            prime2HitCount: 0
-          }
-        }
-        
-        if (d.encounterId === 0) {
-          lapMap[lap].bossTokens += 1
-          lapMap[lap].bossDamageSum += d.damageDealt || 0
-          lapMap[lap].bossHitCount += 1
-        } else if (d.encounterId === 1) {
-          lapMap[lap].prime1Tokens += 1
-          lapMap[lap].prime1DamageSum += d.damageDealt || 0
-          lapMap[lap].prime1HitCount += 1
-        } else if (d.encounterId === 2) {
-          lapMap[lap].prime2Tokens += 1
-          lapMap[lap].prime2DamageSum += d.damageDealt || 0
-          lapMap[lap].prime2HitCount += 1
-        }
-      })
-
-      const lapDataArray = Object.entries(lapMap)
-        .map(([lap, stats]) => ({
-          loopIndex: parseInt(lap),
-          bossTokens: stats.bossTokens,
-          prime1Tokens: stats.prime1Tokens,
-          prime2Tokens: stats.prime2Tokens,
-          bossAvgDamage: stats.bossHitCount > 0 ? stats.bossDamageSum / stats.bossHitCount : 0,
-          prime1AvgDamage: stats.prime1HitCount > 0 ? stats.prime1DamageSum / stats.prime1HitCount : 0,
-          prime2AvgDamage: stats.prime2HitCount > 0 ? stats.prime2DamageSum / stats.prime2HitCount : 0
-        }))
-        .sort((a, b) => a.loopIndex - b.loopIndex)
+      const topDamagePlayer = bossPlayers.length > 0 ? bossPlayers[0] : null
+      const biggestHit = Math.max(...filteredData.map(d => d.damageDealt || 0))
+      const biggestHitEntry = filteredData.find(d => d.damageDealt === biggestHit)
 
       setOverallStats({
         avgDamagePerHit,
-        totalBossTokens,
-        totalPrimeTokens,
-        totalTokens,
+        totalBossTokens: bossData.length,
+        totalPrimeTokens: prime1Data.length + prime2Data.length,
+        totalTokens: filteredData.length,
         topDamagePlayer: topDamagePlayer?.displayName || '',
         topDamageAmount: topDamagePlayer?.totalDamage || 0,
         biggestHitPlayer: biggestHitEntry?.displayName || '',
-        biggestHitAmount: biggestHit
+        biggestHitAmount: biggestHit,
+        avgBossEfficiency: bossData.length > 0 ? bossData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / bossData.length : 0,
+        avgPrimeEfficiency: (prime1Data.length + prime2Data.length) > 0 ? 
+          (prime1Data.reduce((sum, d) => sum + (d.damageDealt || 0), 0) + prime2Data.reduce((sum, d) => sum + (d.damageDealt || 0), 0)) / 
+          (prime1Data.length + prime2Data.length) : 0
       })
-      
-      setLapData(lapDataArray)
+
+    } catch (error) {
+      console.error('Error in fetchLevelData:', error)
+    } finally {
+      setLoading(false)
     }
-    
-    setLoading(false)
   }
 
   if (loading) {
     return (
-      <div className="flex justify-center p-16">
-        <div className="spinner-modern w-8 h-8"></div>
-      </div>
-    )
-  }
-
-  // Show message if no guild or season selected
-  if (!selectedGuild || !selectedSeason) {
-    return (
-      <div className="container-modern py-16">
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
         <div className="text-center">
-          <div className="text-6xl mb-4">⚙️</div>
-          <h2 className="heading-secondary mb-2">Select Guild and Season</h2>
-          <p className="text-secondary">Please select both a guild and season from the dropdown menus above to view L{level} boss analysis.</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mx-auto"></div>
+          <p className="mt-4 text-gray-600 font-medium">Loading Level {level} analysis...</p>
         </div>
       </div>
     )
   }
 
-  // Show message if no data found
-  if (levelData.length === 0) {
-    return (
-      <div className="container-modern py-16">
-        <div className="text-center">
-          <div className="text-6xl mb-4">📊</div>
-          <h2 className="heading-secondary mb-2">No L{level} Data Found</h2>
-          <p className="text-secondary">No data found for {selectedGuild} guild in Season {selectedSeason} at Level {level}.</p>
-        </div>
-      </div>
-    )
-  }
-
-  const maxTokensPerLap = Math.max(...lapData.map(l => l.bossTokens + l.prime1Tokens + l.prime2Tokens))
+  const maxTokensPerLap = Math.max(...lapData.map(l => l.totalTokens), 1)
 
   return (
-    <div className="container-modern py-6 space-y-6 animate-fade-in">
-      {/* Header */}
-      <div className="text-center">
-        <h2 className="text-2xl sm:text-3xl font-bold text-gradient mb-3">
-          L{level} {bossName || 'Boss Analysis'}
-        </h2>
-        <p className="text-secondary font-medium">
-          Season {selectedSeason} • {selectedGuild} Guild • Level {level} Combat Data
-        </p>
-        {/* Filter Indicator */}
-        <div className="mt-2 text-sm text-muted">
-          Legendary Tier Only • No Last Hits • No Bombs • Battles per Boss
-        </div>
-      </div>
-
-      {/* Overall Stats */}
-      <div className="grid-stats">
-        <div className="stat-card bg-accent-blue">
-          <div className="stat-display accent-blue">
-            {(overallStats.avgDamagePerHit / 1000000).toFixed(2)}M
-          </div>
-          <div className="text-xs text-secondary font-semibold">Avg Damage/Hit</div>
-        </div>
-        <div className="stat-card bg-accent-green">
-          <div className="stat-display accent-green">
-            {overallStats.totalBossTokens}
-          </div>
-          <div className="text-xs text-secondary font-semibold">Total Boss Tokens</div>
-        </div>
-        <div className="stat-card bg-accent-purple">
-          <div className="stat-display accent-purple">
-            {overallStats.totalPrimeTokens}
-          </div>
-          <div className="text-xs text-secondary font-semibold">Total Prime Tokens</div>
-        </div>
-        <div className="stat-card bg-accent-orange">
-          <div className="stat-display accent-orange">
-            {overallStats.totalTokens}
-          </div>
-          <div className="text-xs text-secondary font-semibold">Total Tokens</div>
-        </div>
-      </div>
-
-      {/* Key Performance Indicators */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <div className="card-elevated p-6">
-          <h3 className="font-bold text-secondary text-lg mb-4 flex items-center">
-            🏆 Top Total Damage
-          </h3>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-yellow-600 mb-2">
-              {overallStats.topDamagePlayer}
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
+      <div className="container mx-auto p-6 space-y-8">
+        
+        {/* Header */}
+        <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 p-6 rounded-2xl text-white shadow-2xl">
+          <h1 className="text-3xl font-bold mb-2">⚔️ Level {level} Boss Analysis</h1>
+          <p className="text-blue-100">Season {selectedSeason} • {selectedGuild} Guild • {bossName || `Level ${level}`}</p>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
+            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
+              <div className="text-2xl font-bold">{Math.round(overallStats.avgDamagePerHit / 1000)}K</div>
+              <div className="text-blue-100">Avg per Hit</div>
             </div>
-            <div className="stat-display accent-warning">
-              {(overallStats.topDamageAmount / 1000000).toFixed(2)}M
+            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
+              <div className="text-2xl font-bold">{overallStats.totalBossTokens}</div>
+              <div className="text-blue-100">Boss Tokens</div>
+            </div>
+            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
+              <div className="text-2xl font-bold">{overallStats.totalPrimeTokens}</div>
+              <div className="text-blue-100">Prime Tokens</div>
+            </div>
+            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
+              <div className="text-2xl font-bold">{overallStats.totalTokens}</div>
+              <div className="text-blue-100">Total Tokens</div>
             </div>
           </div>
         </div>
 
-        <div className="card-elevated p-6">
-          <h3 className="font-bold text-secondary text-lg mb-4 flex items-center">
-            💥 Biggest Single Hit
-          </h3>
-          <div className="text-center">
-            <div className="text-2xl font-bold text-red-600 mb-2">
-              {overallStats.biggestHitPlayer}
-            </div>
-            <div className="stat-display accent-red">
-              {(overallStats.biggestHitAmount / 1000000).toFixed(2)}M
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tokens Per Lap Stacked Chart */}
-      <div className="card-elevated p-6">
-        <h3 className="font-bold text-secondary text-lg mb-4">
-          📊 Tokens Per Lap (Stacked)
-        </h3>
-        <div className="space-y-3">
-          {lapData.map((lap) => {
-            const totalTokens = lap.bossTokens + lap.prime1Tokens + lap.prime2Tokens
-            const bossPercent = totalTokens > 0 ? (lap.bossTokens / maxTokensPerLap) * 100 : 0
-            const prime1Percent = totalTokens > 0 ? (lap.prime1Tokens / maxTokensPerLap) * 100 : 0
-            const prime2Percent = totalTokens > 0 ? (lap.prime2Tokens / maxTokensPerLap) * 100 : 0
-            
-            return (
-              <div key={lap.loopIndex} className="flex items-center space-x-4">
-                <div className="w-12 text-center text-sm font-mono text-secondary font-semibold">
-                  L{lap.loopIndex + 1}
-                </div>
-                <div className="flex-1">
-                  <div className="progress-bar h-6 relative flex rounded-lg overflow-hidden">
-                    {/* Boss tokens - blue */}
-                    <div 
-                      className="bg-blue-500 h-6 flex items-center justify-center text-xs font-mono text-white"
-                      style={{ width: `${bossPercent}%` }}
-                    >
-                      {lap.bossTokens > 0 && lap.bossTokens}
-                    </div>
-                    {/* Prime 1 tokens - green */}
-                    <div 
-                      className="bg-green-500 h-6 flex items-center justify-center text-xs font-mono text-white"
-                      style={{ width: `${prime1Percent}%` }}
-                    >
-                      {lap.prime1Tokens > 0 && lap.prime1Tokens}
-                    </div>
-                    {/* Prime 2 tokens - purple */}
-                    <div 
-                      className="bg-purple-500 h-6 flex items-center justify-center text-xs font-mono text-white"
-                      style={{ width: `${prime2Percent}%` }}
-                    >
-                      {lap.prime2Tokens > 0 && lap.prime2Tokens}
-                    </div>
-                  </div>
-                </div>
-                <div className="w-20 text-right text-sm font-mono text-secondary font-semibold">
-                  {totalTokens}
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        {/* Legend */}
-        <div className="mt-4 flex justify-center space-x-6 text-sm">
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-blue-500 rounded"></div>
-            <span className="text-secondary">{bossName || 'Boss'}</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-green-500 rounded"></div>
-            <span className="text-secondary">{prime1Name || 'Prime 1'}</span>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-3 h-3 bg-purple-500 rounded"></div>
-            <span className="text-secondary">{prime2Name || 'Prime 2'}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Boss Rankings */}
-      {bossPlayerStats.length > 0 && (
-        <div className="card-elevated p-6">
-          <h3 className="font-bold text-secondary text-lg mb-4">
-            ⚔️ {bossName || 'Boss'} Rankings - Average Damage
-          </h3>
+        {/* Charts Grid */}
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
           
-          <div className="space-y-3">
-            {bossPlayerStats.slice(0, 15).map((player, index) => (
-              <div key={player.displayName} className="player-card hover-lift">
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-sm font-bold accent-blue w-8">#{index + 1}</span>
-                    <div>
-                      <div className="font-semibold text-sm text-primary">{player.displayName}</div>
-                      <div className="text-xs text-secondary font-mono">{player.hitCount} hits</div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="stat-display accent-blue">
-                      {(player.avgDamage / 1000000).toFixed(2)}M
-                    </div>
-                    <div className="text-xs text-muted">avg damage</div>
-                  </div>
-                </div>
-                
-                <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-                  <div className="text-center">
-                    <div className="font-mono accent-cyan">{(player.totalDamage / 1000000).toFixed(1)}M</div>
-                    <div className="text-secondary">Total DMG</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-blue">{player.tokenCount}</div>
-                    <div className="text-secondary">Tokens</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-red">{(player.biggestHit / 1000000).toFixed(2)}M</div>
-                    <div className="text-secondary">Best Hit</div>
-                  </div>
-                </div>
-              </div>
-            ))}
+          {/* Top Players Performance */}
+          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
+            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-yellow-600 to-orange-600 bg-clip-text text-transparent">
+              🏆 Top Players - Boss Performance
+            </h3>
+            <ResponsiveContainer width="100%" height={350}>
+              <BarChart data={bossPlayerStats.slice(0, 8)} layout="vertical">
+                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+                <XAxis type="number" tick={{ fontSize: 12 }} />
+                <YAxis dataKey="displayName" type="category" tick={{ fontSize: 10 }} width={80} />
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                    border: 'none', 
+                    borderRadius: '12px',
+                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  }}
+                  formatter={(value, name, props) => [
+                    `${Math.round(Number(value) / 1000)}K total damage`,
+                    `${props.payload.tokenCount} tokens, ${Math.round(props.payload.avgDamage / 1000)}K avg`
+                  ]}
+                />
+                <Bar dataKey="totalDamage" fill="#F59E0B" radius={[0, 4, 4, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
-        </div>
-      )}
 
-      {/* Prime 1 Rankings */}
-      {prime1PlayerStats.length > 0 && (
-        <div className="card-elevated p-6">
-          <h3 className="font-bold text-secondary text-lg mb-4">
-            🎯 {prime1Name || 'Prime 1'} Rankings - Average Damage
-          </h3>
-          
-          <div className="space-y-3">
-            {prime1PlayerStats.slice(0, 15).map((player, index) => (
-              <div key={player.displayName} className="player-card hover-lift">
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-sm font-bold accent-green w-8">#{index + 1}</span>
-                    <div>
-                      <div className="font-semibold text-sm text-primary">{player.displayName}</div>
-                      <div className="text-xs text-secondary font-mono">{player.hitCount} hits</div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="stat-display accent-green">
-                      {(player.avgDamage / 1000000).toFixed(2)}M
-                    </div>
-                    <div className="text-xs text-muted">avg damage</div>
-                  </div>
-                </div>
-                
-                <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-                  <div className="text-center">
-                    <div className="font-mono accent-cyan">{(player.totalDamage / 1000000).toFixed(1)}M</div>
-                    <div className="text-secondary">Total DMG</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-green">{player.tokenCount}</div>
-                    <div className="text-secondary">Tokens</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-red">{(player.biggestHit / 1000000).toFixed(2)}M</div>
-                    <div className="text-secondary">Best Hit</div>
-                  </div>
-                </div>
-              </div>
-            ))}
+          {/* Damage Distribution */}
+          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
+            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
+              📊 Damage Distribution
+            </h3>
+            <ResponsiveContainer width="100%" height={350}>
+              <PieChart>
+                <Pie
+                  data={damageDistributionData}
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={120}
+                  dataKey="count"
+                  label={({ range, count }) => `${range}: ${count}`}
+                  labelLine={false}
+                >
+                  {damageDistributionData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip 
+                  contentStyle={{ 
+                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                    border: 'none', 
+                    borderRadius: '12px',
+                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  }}
+                  formatter={(value, name, props) => [
+                    `${value} hits`,
+                    props.payload.range
+                  ]}
+                />
+              </PieChart>
+            </ResponsiveContainer>
           </div>
-        </div>
-      )}
 
-      {/* Prime 2 Rankings */}
-      {prime2PlayerStats.length > 0 && (
-        <div className="card-elevated p-6">
-          <h3 className="font-bold text-secondary text-lg mb-4">
-            🔥 {prime2Name || 'Prime 2'} Rankings - Average Damage
-          </h3>
-          
-          <div className="space-y-3">
-            {prime2PlayerStats.slice(0, 15).map((player, index) => (
-              <div key={player.displayName} className="player-card hover-lift">
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center space-x-3">
-                    <span className="text-sm font-bold accent-purple w-8">#{index + 1}</span>
-                    <div>
-                      <div className="font-semibold text-sm text-primary">{player.displayName}</div>
-                      <div className="text-xs text-secondary font-mono">{player.hitCount} hits</div>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="stat-display accent-purple">
-                      {(player.avgDamage / 1000000).toFixed(2)}M
-                    </div>
-                    <div className="text-xs text-muted">avg damage</div>
-                  </div>
-                </div>
-                
-                <div className="mt-3 grid grid-cols-3 gap-3 text-xs">
-                  <div className="text-center">
-                    <div className="font-mono accent-cyan">{(player.totalDamage / 1000000).toFixed(1)}M</div>
-                    <div className="text-secondary">Total DMG</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-purple">{player.tokenCount}</div>
-                    <div className="text-secondary">Tokens</div>
-                  </div>
-                  <div className="text-center">
-                    <div className="font-mono accent-red">{(player.biggestHit / 1000000).toFixed(2)}M</div>
-                    <div className="text-secondary">Best Hit</div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
         </div>
-      )}
+
+        {/* Lap Progression Analysis - Full Width */}
+        <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
+          <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">
+            📈 Token Usage Progression by Loop
+          </h3>
+          <ResponsiveContainer width="100%" height={400}>
+            <ComposedChart data={lapData}>
+              <defs>
+                <linearGradient id="bossGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.8}/>
+                  <stop offset="95%" stopColor="#3B82F6" stopOpacity={0.1}/>
+                </linearGradient>
+                <linearGradient id="primeGradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#EF4444" stopOpacity={0.8}/>
+                  <stop offset="95%" stopColor="#EF4444" stopOpacity={0.1}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+              <XAxis dataKey="loopIndex" tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
+              <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                  border: 'none', 
+                  borderRadius: '12px',
+                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                }}
+                formatter={(value, name) => {
+                  if (name.includes('Tokens')) return [`${value} tokens`, name]
+                  if (name.includes('Damage')) return [`${Math.round(Number(value) / 1000)}K`, name]
+                  return [value, name]
+                }}
+              />
+              <Legend />
+              <Area yAxisId="left" type="monotone" dataKey="bossTokens" stackId="1" stroke="#3B82F6" fill="url(#bossGradient)" name="Boss Tokens" />
+              <Area yAxisId="left" type="monotone" dataKey="prime1Tokens" stackId="1" stroke="#EF4444" fill="url(#primeGradient)" name="Prime 1 Tokens" />
+              <Area yAxisId="left" type="monotone" dataKey="prime2Tokens" stackId="1" stroke="#10B981" fill="#10B981" fillOpacity={0.3} name="Prime 2 Tokens" />
+              <Line yAxisId="right" type="monotone" dataKey="totalDamage" stroke="#F59E0B" strokeWidth={3} dot={{ fill: '#F59E0B', strokeWidth: 2, r: 6 }} name="Total Damage" />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Player Comparison Analysis */}
+        <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
+          <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
+            ⚡ Player Performance Comparison
+          </h3>
+          <ResponsiveContainer width="100%" height={400}>
+            <ScatterChart data={playerComparisonData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
+              <XAxis dataKey="bossAvg" tick={{ fontSize: 12 }} name="Boss Avg (K)" />
+              <YAxis dataKey="primeAvg" tick={{ fontSize: 12 }} name="Prime Avg (K)" />
+              <ZAxis dataKey="totalDamage" range={[50, 400]} />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                  border: 'none', 
+                  borderRadius: '12px',
+                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                }}
+                formatter={(value, name, props) => [
+                  props.payload.name,
+                  `Boss: ${props.payload.bossAvg}K, Prime: ${props.payload.primeAvg}K, Total: ${props.payload.totalDamage}K`
+                ]}
+              />
+              <Scatter fill="#8B5CF6" />
+            </ScatterChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Performance Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+          
+          <div className="bg-gradient-to-br from-yellow-500 to-orange-500 p-6 rounded-2xl text-white shadow-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-yellow-100">Top Total Damage</p>
+                <p className="text-2xl font-bold">{overallStats.topDamagePlayer}</p>
+                <p className="text-xl">{Math.round(overallStats.topDamageAmount / 1000)}K</p>
+              </div>
+              <div className="text-4xl">🏆</div>
+            </div>
+          </div>
+          
+          <div className="bg-gradient-to-br from-red-500 to-red-600 p-6 rounded-2xl text-white shadow-xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-red-100">Biggest Single Hit</p>
+                <p className="text-2xl font-bold">{overallStats.biggestHitPlayer}</p>
+                <p className="text-xl">{Math.round(overallStats.biggestHitAmount / 1000)}K</p>
+              </div>
+              <div className="text-4xl">💥</div>
+            </div>
+          </div>
+
+        </div>
+
+      </div>
     </div>
   )
 }
