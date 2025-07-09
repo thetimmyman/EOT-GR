@@ -28,9 +28,16 @@ interface PlayerSummary {
   bossesPlayed: number
 }
 
-// Helper function to calculate SpecialCases (replicate DAX logic exactly)
+// Simplified SpecialCases logic - handle missing fields gracefully
 const getSpecialCases = (entry: any, allData: any[]) => {
-  if (!entry.damageDealt) return "Crash"
+  if (!entry.damageDealt || entry.damageDealt === 0) return "Crash"
+  
+  // If any required fields are missing, treat as Standard
+  if (entry.loopIndex === null || entry.loopIndex === undefined ||
+      entry.tier === null || entry.tier === undefined ||
+      !entry.Name || !entry.Season || !entry.Guild) {
+    return "Standard"
+  }
   
   // Find all entries for this specific boss encounter
   const sameEncounterData = allData.filter(d => 
@@ -38,13 +45,17 @@ const getSpecialCases = (entry: any, allData: any[]) => {
     d.Name === entry.Name &&
     d.tier === entry.tier &&
     d.Season === entry.Season &&
-    d.Guild === entry.Guild
+    d.Guild === entry.Guild &&
+    d.damageDealt > 0
   )
   
-  // Find minimum remaining HP for this encounter
-  const minRemainingHp = Math.min(...sameEncounterData.map(d => d.remainingHp || 0))
+  if (sameEncounterData.length === 0) return "Standard"
   
-  // Count total hits for this encounter
+  // Find minimum remaining HP for this encounter
+  const remainingHps = sameEncounterData.map(d => d.remainingHp || 0).filter(hp => hp >= 0)
+  if (remainingHps.length === 0) return "Standard"
+  
+  const minRemainingHp = Math.min(...remainingHps)
   const totalHits = sameEncounterData.length
   
   // Check if this is a last hit (minimum remaining HP AND Battle damage type)
@@ -79,7 +90,9 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       return
     }
     
-    // Get ALL battle data for the season - need full dataset for SpecialCases calculation
+    console.log('Fetching data for:', selectedGuild, selectedSeason)
+    
+    // Get ALL battle data for the season - more permissive query
     const { data: allData, error } = await supabase
       .from('EOT_GR_data')
       .select(`
@@ -87,10 +100,12 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         remainingHp, damageType, Guild, rarity, set, overallTokenUsage
       `)
       .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')  // Only Battle type
-      .gte('tier', 4)              // Legendary tier (4+)
-      .gt('damageDealt', 0)        // Valid damage only
-      .limit(50000)
+      .eq('damageType', 'Battle')
+      .gte('tier', 4)
+      .gt('damageDealt', 0)
+      .not('displayName', 'is', null)
+      .not('Name', 'is', null)
+      .limit(100000)
 
     if (error) {
       console.error('Error fetching data:', error)
@@ -105,20 +120,35 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
     }
 
     console.log('Raw data loaded:', allData.length, 'records')
+    console.log('Sample record:', allData[0])
 
-    // Apply SpecialCases logic to identify last hits correctly
-    const dataWithSpecialCases = allData.map(d => ({
+    // First, let's try a simpler approach - just filter out obvious last hits
+    // Use remainingHp = 0 as proxy for last hits (simpler than full SpecialCases)
+    const filteredData = allData.filter(d => {
+      // Basic filters
+      if (!d.displayName || !d.Name || d.damageDealt <= 0) return false
+      
+      // Simple last hit detection: remainingHp = 0 typically indicates a finishing blow
+      if (d.remainingHp === 0) return false
+      
+      return true
+    })
+
+    console.log('After basic filtering:', filteredData.length, 'records')
+
+    if (filteredData.length === 0) {
+      console.log('No records after filtering')
+      setLoading(false)
+      return
+    }
+
+    // Add overallTokenUsage for records that don't have it
+    const dataWithTokenUsage = filteredData.map(d => ({
       ...d,
-      specialCases: getSpecialCases(d, allData),
       overallTokenUsage: d.overallTokenUsage || (d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg.")
     }))
 
-    // Filter out "Last Hit" entries (matching DAX logic: SpecialCases <> "Last Hit")
-    const filteredData = dataWithSpecialCases.filter(d => d.specialCases !== "Last Hit")
-
-    console.log('Filtered data (no last hits):', filteredData.length, 'records')
-
-    // Group by boss and overallTokenUsage for averages (matching DAX logic exactly)
+    // Group by boss and overallTokenUsage for averages
     const bossStats = new Map<string, {
       clusterTotal: number
       clusterCount: number
@@ -127,7 +157,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       playerStats: Map<string, { total: number, count: number }>
     }>()
 
-    filteredData.forEach(entry => {
+    dataWithTokenUsage.forEach(entry => {
       const key = `${entry.Name}_${entry.overallTokenUsage}`
       
       if (!bossStats.has(key)) {
@@ -143,16 +173,16 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       const stats = bossStats.get(key)!
       const damage = entry.damageDealt || 0
       
-      // Cluster stats (all guilds) - matches DAX avgPerSeasonPerBoss calculation
+      // Cluster stats (all guilds)
       stats.clusterTotal += damage
       stats.clusterCount += 1
       
-      // Guild stats (selected guild only) - matches DAX guild logic
+      // Guild stats (selected guild only)
       if (entry.Guild === selectedGuild) {
         stats.guildTotal += damage
         stats.guildCount += 1
         
-        // Player stats within guild - matches avgPerSeasonPerBossPerPlayer
+        // Player stats within guild
         if (!stats.playerStats.has(entry.displayName)) {
           stats.playerStats.set(entry.displayName, { total: 0, count: 0 })
         }
@@ -164,7 +194,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
     console.log('Boss stats computed for', bossStats.size, 'boss/token combinations')
 
-    // Calculate per-boss performance for each player (matching DAX playerVsAvg calculation)
+    // Calculate per-boss performance for each player
     const playerBossResults: PlayerBossStats[] = []
     
     bossStats.forEach((stats, key) => {
@@ -173,10 +203,10 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       const guildAvg = stats.guildCount > 0 ? stats.guildTotal / stats.guildCount : 0
       
       stats.playerStats.forEach((playerStat, playerName) => {
-        if (playerStat.count > 1) { // Only players with multiple battles on this boss
+        if (playerStat.count >= 2) { // Only players with 2+ battles on this boss
           const playerAvg = playerStat.total / playerStat.count
           
-          // Match DAX calculation exactly: (avgPerSeasonPerBossPerPlayer/avgPerSeasonPerBoss-1)*100
+          // Calculate percentage vs averages
           const vsClusterPct = clusterAvg > 0 ? ((playerAvg / clusterAvg) - 1) * 100 : 0
           const vsGuildPct = guildAvg > 0 ? ((playerAvg / guildAvg) - 1) * 100 : 0
           
@@ -197,7 +227,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
     console.log('Player boss results:', playerBossResults.length, 'entries')
 
-    // Calculate overall player summaries (weighted average across all bosses)
+    // Calculate overall player summaries
     const playerSummaryMap = new Map<string, {
       clusterPerfs: number[]
       guildPerfs: number[]
@@ -239,6 +269,14 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
     console.log('Final player summaries:', playerSummaryResults.length, 'players')
     console.log('Above average (cluster):', playerSummaryResults.filter(p => p.avgVsCluster > 0).length)
     console.log('Above average (guild):', playerSummaryResults.filter(p => p.avgVsGuild > 0).length)
+
+    // Log sample data for debugging
+    if (playerSummaryResults.length > 0) {
+      console.log('Sample player result:', playerSummaryResults[0])
+    }
+    if (playerBossResults.length > 0) {
+      console.log('Sample boss result:', playerBossResults[0])
+    }
 
     setPlayerBossStats(playerBossResults)
     setPlayerSummaries(playerSummaryResults)
@@ -329,10 +367,13 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         </div>
       </div>
 
-      {/* No Data Message */}
+      {/* Debug Info */}
       {playerSummaries.length === 0 && !loading && (
-        <div className="bg-white rounded-lg p-8 shadow-sm text-center">
-          <p className="text-gray-500">No qualified players found</p>
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <h3 className="font-medium text-yellow-800 mb-2">Debug Information</h3>
+          <p className="text-sm text-yellow-700">
+            No qualified players found. Check the browser console for detailed logs about data filtering.
+          </p>
         </div>
       )}
 
