@@ -42,12 +42,13 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
         .select('Season, Guild, damageType, rarity, tier, set')
         .limit(100000) // Set high limit to get all records
 
-      const seasons = [...new Set(allData?.map(d => d.Season))].sort()
-      const guilds = [...new Set(allData?.map(d => d.Guild))].sort()
-      const damageTypes = [...new Set(allData?.map(d => d.damageType))].sort()
-      const rarities = [...new Set(allData?.map(d => d.rarity))].sort()
-      const tiers = [...new Set(allData?.map(d => d.tier))].sort()
-      const sets = [...new Set(allData?.map(d => d.set))].sort()
+      // Fix the TypeScript error by using Array.from instead of spread operator
+      const seasons = Array.from(new Set(allData?.map(d => d.Season) || [])).sort()
+      const guilds = Array.from(new Set(allData?.map(d => d.Guild) || [])).sort()
+      const damageTypes = Array.from(new Set(allData?.map(d => d.damageType) || [])).sort()
+      const rarities = Array.from(new Set(allData?.map(d => d.rarity) || [])).sort()
+      const tiers = Array.from(new Set(allData?.map(d => d.tier) || [])).sort()
+      const sets = Array.from(new Set(allData?.map(d => d.set) || [])).sort()
 
       setData({
         sample: testData,
@@ -75,7 +76,6 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
     }
   }
 
-  // Rest of your component remains the same...
   if (loading) {
     return (
       <div className="p-4">
