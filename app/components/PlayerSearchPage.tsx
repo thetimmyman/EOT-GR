@@ -19,32 +19,6 @@ interface PlayerStats {
   historicalTokens: {[key: string]: number}
 }
 
-interface PlayerData {
-  displayName: string
-  damageDealt: number
-  damageType: string
-  Name: string
-  Season: string
-  encounterId: number
-  loopIndex: number
-  tier: number
-  remainingHp: number
-}
-
-// Helper function to identify last hits
-const isLastHit = (entry: PlayerData, allData: PlayerData[]) => {
-  const sameEncounterData = allData.filter(d => 
-    d.loopIndex === entry.loopIndex &&
-    d.Name === entry.Name &&
-    d.tier === entry.tier &&
-    d.Season === entry.Season
-  )
-  
-  const minRemainingHp = Math.min(...sameEncounterData.map(d => d.remainingHp || 0))
-  
-  return entry.remainingHp === minRemainingHp && entry.damageType === 'Battle'
-}
-
 export default function PlayerSearchPage({ selectedGuild, selectedSeason }: PlayerSearchPageProps) {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedPlayer, setSelectedPlayer] = useState('')
@@ -74,9 +48,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       .select('displayName')
       .eq('Guild', selectedGuild)
       .eq('Season', selectedSeason)
-      .neq('displayName', null)
-      // Remove the filters that are preventing players from showing up
-      .limit(10000) // Higher limit to get all players
+      .not('displayName', 'is', null)
+      .limit(10000)
 
     if (error) {
       console.error('Error fetching players:', error)
@@ -86,7 +59,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     if (data) {
       const uniqueNames = new Set(data.map(d => d.displayName))
       const players = Array.from(uniqueNames).sort()
-      console.log('Found players:', players.length) // Debug log
+      console.log('Found players:', players.length)
       setAvailablePlayers(players)
     }
   }
@@ -98,7 +71,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     console.log('Fetching stats for:', selectedPlayer, selectedGuild, selectedSeason)
 
     try {
-      // Get ALL player data for current season and guild (no filtering first)
+      // Get ALL player data - no filtering
       const { data: playerData, error: playerError } = await supabase
         .from('EOT_GR_data')
         .select('*')
@@ -121,39 +94,37 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         return
       }
 
-      // Get cluster data for averages (simplified)
+      // Get cluster data - simplified query, no filtering
       const { data: clusterData } = await supabase
         .from('EOT_GR_data')
         .select('damageDealt, damageType')
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
-        .neq('damageDealt', null)
+        .gt('damageDealt', 0)
         .limit(10000)
 
-      // Get guild data for averages (simplified)
+      // Get guild data - simplified query, no filtering  
       const { data: guildData } = await supabase
         .from('EOT_GR_data')
         .select('damageDealt, damageType')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
-        .neq('damageDealt', null)
+        .gt('damageDealt', 0)
         .limit(10000)
 
-      // Calculate cluster and guild averages
-      const clusterHits = clusterData?.filter(d => d.damageDealt > 0) || []
-      const clusterAverage = clusterHits.length > 0 ? 
-        clusterHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterHits.length : 0
+      // Calculate averages
+      const clusterAverage = clusterData && clusterData.length > 0 ? 
+        clusterData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / clusterData.length : 0
       setClusterAvg(clusterAverage)
 
-      const guildHits = guildData?.filter(d => d.damageDealt > 0) || []
-      const guildAverage = guildHits.length > 0 ? 
-        guildHits.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / guildHits.length : 0
+      const guildAverage = guildData && guildData.length > 0 ? 
+        guildData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / guildData.length : 0
       setGuildAvg(guildAverage)
 
       console.log('Averages - Cluster:', clusterAverage, 'Guild:', guildAverage)
 
-      // Calculate player stats from ALL their data
+      // Calculate player stats
       const battleData = playerData.filter(d => d.damageType === 'Battle')
       const bombData = playerData.filter(d => d.damageType === 'Bomb')
       
@@ -164,7 +135,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       console.log('Player stats:', { totalDamage, tokensUsed, bombsUsed, avgDamagePerHit })
 
-      // Boss-specific stats (simplified)
+      // Boss stats
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number}} = {}
       battleData.forEach(d => {
         const bossKey = d.Name || 'Unknown'
@@ -181,7 +152,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
           bossStats[boss].damage / bossStats[boss].tokens : 0
       })
 
-      // Simplified historical data (just current season for now)
+      // Historical data (simplified - just current season)
       const historicalTokens: {[key: string]: number} = {}
       historicalTokens[selectedSeason] = tokensUsed
 
@@ -249,13 +220,11 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         </label>
         <input
           id="player-search-input"
-          name="player-search"
           type="text"
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           placeholder="Type player name to search..."
           className="input-modern w-full text-base mb-4"
-          aria-label="Search for a player by name"
         />
         
         {searchTerm && (
@@ -341,14 +310,6 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                     {playerStats.vsClusterAvg > 0 ? '+' : ''}{playerStats.vsClusterAvg.toFixed(1)}%
                   </span>
                 </div>
-                <div className="progress-modern">
-                  <div 
-                    className={`progress-fill ${playerStats.vsClusterAvg >= 0 ? 'progress-fill-success' : 'progress-fill-danger'}`}
-                    style={{ 
-                      width: `${Math.min(Math.abs(playerStats.vsClusterAvg), 50)}%` 
-                    }}
-                  />
-                </div>
                 <div className="text-xs text-secondary mt-2">
                   Cluster Avg: {(clusterAvg / 1000).toFixed(0)}K per hit
                 </div>
@@ -360,14 +321,6 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                   <span className={`badge ${getPerformanceBadge(playerStats.vsGuildAvg)}`}>
                     {playerStats.vsGuildAvg > 0 ? '+' : ''}{playerStats.vsGuildAvg.toFixed(1)}%
                   </span>
-                </div>
-                <div className="progress-modern">
-                  <div 
-                    className={`progress-fill ${playerStats.vsGuildAvg >= 0 ? 'progress-fill-success' : 'progress-fill-danger'}`}
-                    style={{ 
-                      width: `${Math.min(Math.abs(playerStats.vsGuildAvg), 50)}%` 
-                    }}
-                  />
                 </div>
                 <div className="text-xs text-secondary mt-2">
                   Guild Avg: {(guildAvg / 1000).toFixed(0)}K per hit
@@ -398,14 +351,6 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                           </span>
                         </div>
                       </div>
-                      <div className="progress-modern">
-                        <div 
-                          className="progress-fill-gradient"
-                          style={{ 
-                            width: `${(stats.damage / Math.max(...Object.values(playerStats.bossStats).map(s => s.damage))) * 100}%` 
-                          }}
-                        />
-                      </div>
                       <div className="text-xs text-secondary mt-2">
                         Total: {(stats.damage / 1000000).toFixed(2)}M damage
                       </div>
@@ -414,33 +359,6 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
               </div>
             </div>
           )}
-
-          {/* Historical Activity */}
-          <div className="card-elevated p-8">
-            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-              📅 Historical Token Usage
-            </h3>
-            <div className="space-y-4">
-              {Object.entries(playerStats.historicalTokens)
-                .sort(([a], [b]) => b.localeCompare(a))
-                .map(([season, tokens]) => (
-                  <div key={season} className="flex justify-between items-center p-4 card-modern hover-lift">
-                    <span className="font-semibold text-secondary">Season {season}</span>
-                    <div className="flex items-center space-x-4">
-                      <span className="stat-display accent-cyan text-lg">{tokens}</span>
-                      <div className="w-32 progress-modern">
-                        <div 
-                          className="progress-fill-success"
-                          style={{ 
-                            width: `${Math.min((tokens / Math.max(...Object.values(playerStats.historicalTokens))) * 100, 100)}%` 
-                          }}
-                        />
-                      </div>
-                    </div>
-                  </div>
-                ))}
-            </div>
-          </div>
         </div>
       )}
 
