@@ -147,9 +147,7 @@ let
                     currentData = Json.Document(Web.Contents(
                         "https://ctzowkkbsnztaojllwta.supabase.co/rest/v1/EOT_GR_data?select=*&limit=1000&offset=" & Text.From(offset),
                         [Headers=[
-                            apikey="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN0em93a2tic256dGFvamxsd3RhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MzUyMjYxMiwiZXhwIjoyMDU5MDk4NjEyfQ.KtK-7SsbkEAICrKYh97Me_qzhV-PLVirG6SQEYcMX5k",
-                            Authorization="Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImN0em93a2tic256dGFvamxsd3RhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0MzUyMjYxMiwiZXhwIjoyMDU5MDk4NjEyfQ.KtK-7SsbkEAICrKYh97Me_qzhV-PLVirG6SQEYcMX5k",
-                            Prefer="return=representation"
+                    
                         ]]
                     )),
                     
