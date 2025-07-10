@@ -356,17 +356,17 @@ export default function VOTLWPage({ selectedGuild, selectedSeason }: VOTLWPagePr
   }
 
   if (loading) {
-    return <div className="flex justify-center p-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
+    return <div className="flex justify-center p-8"><div className="spinner-modern"></div></div>
   }
 
   const veteran = playerPoints[0]
   const runnerUp = playerPoints[1]
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="container-modern py-6 space-y-6">
       <div className="text-center">
-        <h2 className="text-lg font-semibold">Veteran of the Long War</h2>
-        <p className="text-sm text-gray-600">Season {selectedSeason} - {selectedGuild}</p>
+        <h2 className="text-lg font-semibold text-accent-wh40k">Veteran of the Long War</h2>
+        <p className="text-sm text-secondary-wh40k">Season {selectedSeason} - {selectedGuild}</p>
       </div>
 
       {/* Winner Cards */}
@@ -388,35 +388,41 @@ export default function VOTLWPage({ selectedGuild, selectedSeason }: VOTLWPagePr
         )}
       </div>
 
-      {/* Season Awards */}
-      <div className="bg-white rounded-lg p-4 shadow">
-        <h3 className="font-semibold mb-3">Season Awards</h3>
-        <div className="space-y-2">
-          <div className="flex justify-between">
-            <span>🔪 Top Killer:</span>
-            <span className="font-medium">{seasonAwards.topKiller.player} ({seasonAwards.topKiller.value} kills)</span>
+      {/* Season Awards - Separate Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="card-wh40k p-4 border-red-500 glow-accent relative">
+          <div className="absolute top-2 right-2 text-2xl">🔪</div>
+          <div className="text-center">
+            <div className="stat-label-wh40k text-red-400">Top Killer</div>
+            <div className="stat-value-wh40k">{seasonAwards.topKiller.value}</div>
+            <div className="text-sm text-red-300">{seasonAwards.topKiller.player}</div>
           </div>
-          <div className="flex justify-between">
-            <span>💣 Best Bomber:</span>
-            <span className="font-medium">{seasonAwards.bestBomber.player} ({(seasonAwards.bestBomber.value / 1000000).toFixed(1)}M dmg)</span>
+        </div>
+        
+        <div className="card-wh40k p-4 border-orange-500 glow-accent relative">
+          <div className="absolute top-2 right-2 text-2xl">💣</div>
+          <div className="text-center">
+            <div className="stat-label-wh40k text-orange-400">Best Bomber</div>
+            <div className="stat-value-wh40k">{seasonAwards.bestBomber.value.toLocaleString()}</div>
+            <div className="text-sm text-orange-300">{seasonAwards.bestBomber.player}</div>
           </div>
         </div>
       </div>
 
       {/* Player Rankings */}
-      <div className="bg-white rounded-lg p-4 shadow">
-        <h3 className="font-semibold mb-3">Player Rankings</h3>
+      <div className="card-wh40k p-4">
+        <h3 className="heading-wh40k">Player Rankings</h3>
         <div className="space-y-3">
           {playerPoints.slice(0, 10).map((player, index) => (
-            <div key={player.displayName} className={`p-3 rounded border ${index < 3 ? 'bg-yellow-50' : ''}`}>
+            <div key={player.displayName} className={`p-3 rounded border border-primary-wh40k ${index < 3 ? 'glow-accent' : ''}`}>
               <div className="flex justify-between items-center mb-2">
-                <span className="font-medium">
+                <span className="font-medium text-primary-wh40k">
                   {index + 1}. {player.displayName}
                 </span>
-                <span className="font-bold text-lg">{player.totalPoints} pts</span>
+                <span className="font-bold text-lg text-accent-wh40k">{player.totalPoints} pts</span>
               </div>
               
-              <div className="text-xs text-gray-600 space-y-1">
+              <div className="text-xs text-secondary-wh40k space-y-1">
                 <div className="flex space-x-4">
                   <span>🥇 {player.awards.goldMedals}</span>
                   <span>🥈 {player.awards.silverMedals}</span>
@@ -425,8 +431,8 @@ export default function VOTLWPage({ selectedGuild, selectedSeason }: VOTLWPagePr
                   <span>👹 {(player.awards.sideBoss1Wins || 0) + (player.awards.sideBoss2Wins || 0)}</span>
                   <span>🎯 {player.awards.biggestHitAwards}</span>
                 </div>
-                {player.awards.topKiller && <div className="text-green-600">🔪 Top Killer</div>}
-                {player.awards.bestBomber && <div className="text-red-600">💣 Best Bomber</div>}
+                {player.awards.topKiller && <div className="text-green-400">🔪 Top Killer</div>}
+                {player.awards.bestBomber && <div className="text-red-400">💣 Best Bomber</div>}
               </div>
             </div>
           ))}
@@ -434,32 +440,32 @@ export default function VOTLWPage({ selectedGuild, selectedSeason }: VOTLWPagePr
       </div>
 
       {/* Set Winners Table */}
-      <div className="bg-white rounded-lg p-4 shadow overflow-x-auto">
-        <h3 className="font-semibold mb-3">Set Winners</h3>
-        <table className="w-full text-xs">
+      <div className="card-wh40k p-4 overflow-x-auto">
+        <h3 className="heading-wh40k">Set Winners</h3>
+        <table className="table-wh40k">
           <thead>
-            <tr className="border-b">
-              <th className="text-left p-2">Set</th>
-              <th className="text-left p-2">🥇 Gold</th>
-              <th className="text-left p-2">🥈 Silver</th>
-              <th className="text-left p-2">🥉 Bronze</th>
-              <th className="text-left p-2">💥 Most Dmg</th>
-              <th className="text-left p-2">👹 Side 1</th>
-              <th className="text-left p-2">👹 Side 2</th>
-              <th className="text-left p-2">🎯 Big Hit</th>
+            <tr>
+              <th>Set</th>
+              <th>🥇 Gold</th>
+              <th>🥈 Silver</th>
+              <th>🥉 Bronze</th>
+              <th>💥 Most Dmg</th>
+              <th>👹 Side 1</th>
+              <th>👹 Side 2</th>
+              <th>🎯 Big Hit</th>
             </tr>
           </thead>
           <tbody>
             {setWinners.map((set, index) => (
-              <tr key={set.set} className="border-b">
-                <td className="p-2 font-medium">L{index + 1}</td>
-                <td className="p-2">{set.gold}</td>
-                <td className="p-2">{set.silver}</td>
-                <td className="p-2">{set.bronze}</td>
-                <td className="p-2">{set.mostDamage}</td>
-                <td className="p-2">{set.sideBoss1}</td>
-                <td className="p-2">{set.sideBoss2}</td>
-                <td className="p-2">{set.biggestHit}</td>
+              <tr key={set.set}>
+                <td className="font-medium">L{index + 1}</td>
+                <td>{set.gold}</td>
+                <td>{set.silver}</td>
+                <td>{set.bronze}</td>
+                <td>{set.mostDamage}</td>
+                <td>{set.sideBoss1}</td>
+                <td>{set.sideBoss2}</td>
+                <td>{set.biggestHit}</td>
               </tr>
             ))}
           </tbody>

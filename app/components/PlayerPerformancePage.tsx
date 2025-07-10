@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import { addCalculatedFields, addPowerBIIndexing, CalculatedData } from '../lib/calculations'
 
 interface PlayerPerformancePageProps {
   selectedGuild: string
@@ -18,6 +19,7 @@ interface PlayerBossStats {
   vsClusterPct: number
   vsGuildPct: number
   battleCount: number
+  weightedContribution: number
 }
 
 interface PlayerSummary {
@@ -75,6 +77,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
   const [loading, setLoading] = useState(true)
   const [viewMode, setViewMode] = useState<'cluster' | 'guild'>('cluster')
   const [showBossDetail, setShowBossDetail] = useState(false)
+  const [chartData, setChartData] = useState<any[]>([])
 
   useEffect(() => {
     if (selectedSeason && selectedGuild) {
@@ -92,196 +95,200 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
     
     console.log('Fetching data for:', selectedGuild, selectedSeason)
     
-    // Get ALL battle data for the season - more permissive query
-    const { data: allData, error } = await supabase
-      .from('EOT_GR_data')
-      .select(`
-        displayName, damageDealt, Name, encounterId, loopIndex, tier, Season, 
-        remainingHp, damageType, Guild, rarity, set
-      `)
-      .eq('Season', selectedSeason)
-      .eq('damageType', 'Battle')
-      .gte('tier', 4)
-      .gt('damageDealt', 0)
-      .not('displayName', 'is', null)
-      .not('Name', 'is', null)
-      .limit(100000)
+    try {
+      // Get ALL battle data for the season - more permissive query
+      const { data: allData, error } = await supabase
+        .from('EOT_GR_data')
+        .select(`
+          id, displayName, damageDealt, Name, encounterId, loopIndex, tier, Season, 
+          remainingHp, damageType, Guild, rarity, set, enemyHp, enemyHpLeft, 
+          startedOn, completedOn, timestamp, userId, encounterIndex
+        `)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .gte('tier', 4)
+        .gt('damageDealt', 0)
+        .not('displayName', 'is', null)
+        .not('Name', 'is', null)
+        .limit(100000)
 
-    if (error) {
-      console.error('Error fetching data:', error)
-      setLoading(false)
-      return
-    }
-
-    if (!allData || allData.length === 0) {
-      console.log('No data found')
-      setLoading(false)
-      return
-    }
-
-    console.log('Raw data loaded:', allData.length, 'records')
-    console.log('Sample record:', allData[0])
-
-    // First, let's try a simpler approach - just filter out obvious last hits
-    // Use remainingHp = 0 as proxy for last hits (simpler than full SpecialCases)
-    const filteredData = allData.filter(d => {
-      // Basic filters
-      if (!d.displayName || !d.Name || d.damageDealt <= 0) return false
-      
-      // Simple last hit detection: remainingHp = 0 typically indicates a finishing blow
-      if (d.remainingHp === 0) return false
-      
-      return true
-    })
-
-    console.log('After basic filtering:', filteredData.length, 'records')
-
-    if (filteredData.length === 0) {
-      console.log('No records after filtering')
-      setLoading(false)
-      return
-    }
-
-    // Add overallTokenUsage for records that don't have it
-    // Add overallTokenUsage for all records (calculated like Power BI)
-    const dataWithTokenUsage = filteredData.map(d => ({
-      ...d,
-      overallTokenUsage: d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
-    }))
-
-    // Group by boss and overallTokenUsage for averages
-    const bossStats = new Map<string, {
-      clusterTotal: number
-      clusterCount: number
-      guildTotal: number
-      guildCount: number
-      playerStats: Map<string, { total: number, count: number }>
-    }>()
-
-    dataWithTokenUsage.forEach(entry => {
-      const key = `${entry.Name}_${entry.overallTokenUsage}`
-      
-      if (!bossStats.has(key)) {
-        bossStats.set(key, {
-          clusterTotal: 0,
-          clusterCount: 0,
-          guildTotal: 0,
-          guildCount: 0,
-          playerStats: new Map()
-        })
+      if (error) {
+        console.error('Error fetching data:', error)
+        setLoading(false)
+        return
       }
+
+      if (!allData || allData.length === 0) {
+        console.log('No data found')
+        setLoading(false)
+        return
+      }
+
+      console.log('Raw data loaded:', allData.length, 'records')
+      console.log('Sample record:', allData[0])
+
+      // Apply PowerBI-style calculations
+      const calculatedData = addCalculatedFields(allData)
+      const indexedData = addPowerBIIndexing(calculatedData)
       
-      const stats = bossStats.get(key)!
-      const damage = entry.damageDealt || 0
-      
-      // Cluster stats (all guilds)
-      stats.clusterTotal += damage
-      stats.clusterCount += 1
-      
-      // Guild stats (selected guild only)
-      if (entry.Guild === selectedGuild) {
-        stats.guildTotal += damage
-        stats.guildCount += 1
+      console.log('After calculations:', indexedData.length, 'records')
+      console.log('Sample calculated record:', indexedData[0])
+
+      // Filter out last hits and crashes (like PowerBI)
+      const filteredData = indexedData.filter(d => 
+        d.SpecialCases !== 'Last Hit' && d.SpecialCases !== 'Crash'
+      )
+
+      console.log('After filtering (no last hits/crashes):', filteredData.length, 'records')
+
+      if (filteredData.length === 0) {
+        console.log('No records after filtering')
+        setLoading(false)
+        return
+      }
+
+      // Group by boss and overallTokenUsage for averages
+      const bossStats = new Map<string, {
+        clusterTotal: number
+        clusterCount: number
+        guildTotal: number
+        guildCount: number
+        playerStats: Map<string, { total: number, count: number, weightedTotal: number }>
+      }>()
+
+      filteredData.forEach(entry => {
+        const key = `${entry.Name}_${entry.overallTokenUseage}`
         
-        // Player stats within guild
-        if (!stats.playerStats.has(entry.displayName)) {
-          stats.playerStats.set(entry.displayName, { total: 0, count: 0 })
-        }
-        const playerStat = stats.playerStats.get(entry.displayName)!
-        playerStat.total += damage
-        playerStat.count += 1
-      }
-    })
-
-    console.log('Boss stats computed for', bossStats.size, 'boss/token combinations')
-
-    // Calculate per-boss performance for each player
-    const playerBossResults: PlayerBossStats[] = []
-    
-    bossStats.forEach((stats, key) => {
-      const [bossName, tokenUsage] = key.split('_')
-      const clusterAvg = stats.clusterCount > 0 ? stats.clusterTotal / stats.clusterCount : 0
-      const guildAvg = stats.guildCount > 0 ? stats.guildTotal / stats.guildCount : 0
-      
-      stats.playerStats.forEach((playerStat, playerName) => {
-        if (playerStat.count >= 2) { // Only players with 2+ battles on this boss
-          const playerAvg = playerStat.total / playerStat.count
-          
-          // Calculate percentage vs averages
-          const vsClusterPct = clusterAvg > 0 ? ((playerAvg / clusterAvg) - 1) * 100 : 0
-          const vsGuildPct = guildAvg > 0 ? ((playerAvg / guildAvg) - 1) * 100 : 0
-          
-          playerBossResults.push({
-            displayName: playerName,
-            bossName,
-            overallTokenUsage: tokenUsage,
-            playerAvg,
-            clusterAvg,
-            guildAvg,
-            vsClusterPct,
-            vsGuildPct,
-            battleCount: playerStat.count
+        if (!bossStats.has(key)) {
+          bossStats.set(key, {
+            clusterTotal: 0,
+            clusterCount: 0,
+            guildTotal: 0,
+            guildCount: 0,
+            playerStats: new Map()
           })
         }
+        
+        const stats = bossStats.get(key)!
+        const damage = entry.damageDealt || 0
+        const weightedContribution = entry.WeightedContribution || 0
+        
+        // Cluster stats (all guilds)
+        stats.clusterTotal += damage
+        stats.clusterCount += 1
+        
+        // Guild stats (selected guild only)
+        if (entry.Guild === selectedGuild) {
+          stats.guildTotal += damage
+          stats.guildCount += 1
+          
+          // Player stats within guild
+          if (!stats.playerStats.has(entry.displayName)) {
+            stats.playerStats.set(entry.displayName, { total: 0, count: 0, weightedTotal: 0 })
+          }
+          const playerStat = stats.playerStats.get(entry.displayName)!
+          playerStat.total += damage
+          playerStat.count += 1
+          playerStat.weightedTotal += weightedContribution
+        }
       })
-    })
 
-    console.log('Player boss results:', playerBossResults.length, 'entries')
+      console.log('Boss stats computed for', bossStats.size, 'boss/token combinations')
 
-    // Calculate overall player summaries
-    const playerSummaryMap = new Map<string, {
-      clusterPerfs: number[]
-      guildPerfs: number[]
-      totalBattles: number
-      bossesPlayed: number
-    }>()
-
-    playerBossResults.forEach(boss => {
-      if (!playerSummaryMap.has(boss.displayName)) {
-        playerSummaryMap.set(boss.displayName, {
-          clusterPerfs: [],
-          guildPerfs: [],
-          totalBattles: 0,
-          bossesPlayed: 0
-        })
-      }
+      // Calculate per-boss performance for each player
+      const playerBossResults: PlayerBossStats[] = []
       
-      const summary = playerSummaryMap.get(boss.displayName)!
-      summary.clusterPerfs.push(boss.vsClusterPct)
-      summary.guildPerfs.push(boss.vsGuildPct)
-      summary.totalBattles += boss.battleCount
-      summary.bossesPlayed += 1
-    })
-
-    const playerSummaryResults: PlayerSummary[] = Array.from(playerSummaryMap.entries())
-      .map(([name, data]) => ({
-        displayName: name,
-        avgVsCluster: data.clusterPerfs.length > 0 ? data.clusterPerfs.reduce((sum, p) => sum + p, 0) / data.clusterPerfs.length : 0,
-        avgVsGuild: data.guildPerfs.length > 0 ? data.guildPerfs.reduce((sum, p) => sum + p, 0) / data.guildPerfs.length : 0,
-        totalBattles: data.totalBattles,
-        bossesPlayed: data.bossesPlayed
-      }))
-      .sort((a, b) => {
-        const aValue = viewMode === 'cluster' ? a.avgVsCluster : a.avgVsGuild
-        const bValue = viewMode === 'cluster' ? b.avgVsCluster : b.avgVsGuild
-        return bValue - aValue
+      bossStats.forEach((stats, key) => {
+        const [bossName, tokenUsage] = key.split('_')
+        const clusterAvg = stats.clusterCount > 0 ? stats.clusterTotal / stats.clusterCount : 0
+        const guildAvg = stats.guildCount > 0 ? stats.guildTotal / stats.guildCount : 0
+        
+        stats.playerStats.forEach((playerStat, playerName) => {
+          if (playerStat.count >= 2) { // Only players with 2+ battles on this boss
+            const playerAvg = playerStat.total / playerStat.count
+            const weightedContribution = playerStat.weightedTotal / playerStat.count
+            
+            // Calculate percentage vs averages
+            const vsClusterPct = clusterAvg > 0 ? ((playerAvg / clusterAvg) - 1) * 100 : 0
+            const vsGuildPct = guildAvg > 0 ? ((playerAvg / guildAvg) - 1) * 100 : 0
+            
+            playerBossResults.push({
+              displayName: playerName,
+              bossName,
+              overallTokenUsage: tokenUsage,
+              playerAvg,
+              clusterAvg,
+              guildAvg,
+              weightedContribution,
+              vsClusterPct,
+              vsGuildPct,
+              battleCount: playerStat.count
+            })
+          }
+        })
       })
 
-    console.log('Final player summaries:', playerSummaryResults.length, 'players')
-    console.log('Above average (cluster):', playerSummaryResults.filter(p => p.avgVsCluster > 0).length)
-    console.log('Above average (guild):', playerSummaryResults.filter(p => p.avgVsGuild > 0).length)
+      console.log('Player boss results:', playerBossResults.length, 'entries')
 
-    // Log sample data for debugging
-    if (playerSummaryResults.length > 0) {
-      console.log('Sample player result:', playerSummaryResults[0])
-    }
-    if (playerBossResults.length > 0) {
-      console.log('Sample boss result:', playerBossResults[0])
-    }
+      // Calculate overall player summaries
+      const playerSummaryMap = new Map<string, {
+        clusterPerfs: number[]
+        guildPerfs: number[]
+        totalBattles: number
+        bossesPlayed: number
+      }>()
 
-    setPlayerBossStats(playerBossResults)
-    setPlayerSummaries(playerSummaryResults)
-    setLoading(false)
+      playerBossResults.forEach(boss => {
+        if (!playerSummaryMap.has(boss.displayName)) {
+          playerSummaryMap.set(boss.displayName, {
+            clusterPerfs: [],
+            guildPerfs: [],
+            totalBattles: 0,
+            bossesPlayed: 0
+          })
+        }
+        
+        const summary = playerSummaryMap.get(boss.displayName)!
+        summary.clusterPerfs.push(boss.vsClusterPct)
+        summary.guildPerfs.push(boss.vsGuildPct)
+        summary.totalBattles += boss.battleCount
+        summary.bossesPlayed += 1
+      })
+
+      const playerSummaryResults: PlayerSummary[] = Array.from(playerSummaryMap.entries())
+        .map(([name, data]) => ({
+          displayName: name,
+          avgVsCluster: data.clusterPerfs.length > 0 ? data.clusterPerfs.reduce((sum, p) => sum + p, 0) / data.clusterPerfs.length : 0,
+          avgVsGuild: data.guildPerfs.length > 0 ? data.guildPerfs.reduce((sum, p) => sum + p, 0) / data.guildPerfs.length : 0,
+          totalBattles: data.totalBattles,
+          bossesPlayed: data.bossesPlayed
+        }))
+        .sort((a, b) => {
+          const aValue = viewMode === 'cluster' ? a.avgVsCluster : a.avgVsGuild
+          const bValue = viewMode === 'cluster' ? b.avgVsCluster : b.avgVsGuild
+          return bValue - aValue
+        })
+
+      console.log('Final player summaries:', playerSummaryResults.length, 'players')
+      console.log('Above average (cluster):', playerSummaryResults.filter(p => p.avgVsCluster > 0).length)
+      console.log('Above average (guild):', playerSummaryResults.filter(p => p.avgVsGuild > 0).length)
+
+      // Log sample data for debugging
+      if (playerSummaryResults.length > 0) {
+        console.log('Sample player result:', playerSummaryResults[0])
+      }
+      if (playerBossResults.length > 0) {
+        console.log('Sample boss result:', playerBossResults[0])
+      }
+
+      setPlayerBossStats(playerBossResults)
+      setPlayerSummaries(playerSummaryResults)
+      setLoading(false)
+
+    } catch (error) {
+      console.error('Error in fetchPlayerPerformance:', error)
+      setLoading(false)
+    }
   }
 
   const getPerformanceValue = (player: PlayerSummary) => {
@@ -309,7 +316,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
   }
 
   if (loading) {
-    return <div className="flex justify-center p-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
+    return <div className="flex justify-center p-8"><div className="spinner-modern"></div></div>
   }
 
   const maxAbsValue = playerSummaries.length > 0 ? 
@@ -318,35 +325,35 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
   const topPlayer = playerSummaries.length > 0 ? playerSummaries[0] : null
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="container-modern py-6 space-y-6">
       <div className="text-center">
-        <h2 className="text-lg font-semibold">Player Performance vs Average (Per Boss)</h2>
-        <p className="text-sm text-gray-600">Season {selectedSeason} - {selectedGuild}</p>
-        <p className="text-xs text-gray-500">Legendary Tier Only • No Last Hits • No Bombs • 2+ Battles per Boss</p>
+        <h2 className="text-lg font-semibold text-accent-wh40k">Player Performance vs Average (Per Boss)</h2>
+        <p className="text-sm text-secondary-wh40k">Season {selectedSeason} - {selectedGuild}</p>
+        <p className="text-xs text-secondary-wh40k">Legendary Tier Only • No Last Hits • No Bombs • 2+ Battles per Boss</p>
       </div>
 
       {/* Controls */}
-      <div className="bg-white rounded-lg p-4 shadow-sm">
+      <div className="card-wh40k p-4">
         <div className="space-y-3">
           <div>
-            <label className="block text-sm font-medium mb-2">Compare Against:</label>
-            <div className="flex bg-gray-100 rounded-lg p-1">
+            <label className="block text-sm font-medium mb-2 text-accent-wh40k">Compare Against:</label>
+            <div className="flex bg-card-bg rounded-lg p-1 border border-primary-wh40k">
               <button
                 onClick={() => setViewMode('cluster')}
-                className={`flex-1 px-3 py-2 rounded text-sm font-medium ${
+                className={`flex-1 px-3 py-2 rounded text-sm font-medium transition-all duration-300 ${
                   viewMode === 'cluster'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-accent-wh40k text-black'
+                    : 'text-primary-wh40k hover:text-accent-wh40k'
                 }`}
               >
                 Cluster Average
               </button>
               <button
                 onClick={() => setViewMode('guild')}
-                className={`flex-1 px-3 py-2 rounded text-sm font-medium ${
+                className={`flex-1 px-3 py-2 rounded text-sm font-medium transition-all duration-300 ${
                   viewMode === 'guild'
-                    ? 'bg-blue-600 text-white'
-                    : 'text-gray-600 hover:text-gray-900'
+                    ? 'bg-accent-wh40k text-black'
+                    : 'text-primary-wh40k hover:text-accent-wh40k'
                 }`}
               >
                 Guild Average
@@ -360,9 +367,9 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
                 type="checkbox"
                 checked={showBossDetail}
                 onChange={(e) => setShowBossDetail(e.target.checked)}
-                className="rounded border-gray-300"
+                className="rounded border-primary-wh40k bg-card-bg text-accent-wh40k"
               />
-              <span className="text-sm font-medium">Show Boss-by-Boss Detail</span>
+              <span className="text-sm font-medium text-primary-wh40k">Show Boss-by-Boss Detail</span>
             </label>
           </div>
         </div>
@@ -370,9 +377,9 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
       {/* Debug Info */}
       {playerSummaries.length === 0 && !loading && (
-        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-          <h3 className="font-medium text-yellow-800 mb-2">Debug Information</h3>
-          <p className="text-sm text-yellow-700">
+        <div className="card-wh40k p-4 border border-accent-wh40k glow-accent">
+          <h3 className="font-medium text-accent-wh40k mb-2">Debug Information</h3>
+          <p className="text-sm text-secondary-wh40k">
             No qualified players found. Check the browser console for detailed logs about data filtering.
           </p>
         </div>
@@ -380,64 +387,107 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
       {/* Performance Chart */}
       {playerSummaries.length > 0 && (
-        <div className="bg-white rounded-lg p-4 shadow-sm">
-          <h3 className="font-semibold mb-4">
+        <div className="card-wh40k p-4">
+          <h3 className="heading-wh40k">
             Average Performance vs {viewMode === 'cluster' ? "Cluster" : "Guild"} [%]
           </h3>
           
-          <div className="space-y-3">
-            {playerSummaries.map((player) => {
+          {/* Column Headers */}
+          <div className="flex items-center gap-2 pb-2 border-b border-primary-wh40k mb-2">
+            <div className="w-24 flex-shrink-0">
+              <span className="text-xs font-medium text-accent-wh40k">Player</span>
+            </div>
+            <div className="flex-1 text-center">
+              <span className="text-xs font-medium text-accent-wh40k">Performance Chart</span>
+            </div>
+            <div className="w-12 flex-shrink-0 text-center">
+              <span className="text-xs font-medium text-accent-wh40k">%</span>
+            </div>
+            <div className="w-16 flex-shrink-0 text-center">
+              <span className="text-xs font-medium text-accent-wh40k">Battles</span>
+            </div>
+            <div className="w-16 flex-shrink-0 text-center">
+              <span className="text-xs font-medium text-accent-wh40k">vs Cluster</span>
+            </div>
+            <div className="w-16 flex-shrink-0 text-center">
+              <span className="text-xs font-medium text-accent-wh40k">vs Guild</span>
+            </div>
+          </div>
+          
+          <div className="space-y-1">
+            {playerSummaries
+              .sort((a, b) => getPerformanceValue(b) - getPerformanceValue(a)) // Sort highest to lowest
+              .map((player) => {
               const value = getPerformanceValue(player)
               const barWidth = Math.abs(value) / chartMax * 100
               const isPositive = value >= 0
               
               return (
-                <div key={player.displayName} className="space-y-1">
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-medium">{player.displayName}</span>
-                    <span className={`text-sm font-mono ${getTextColor(value)}`}>
-                      {value >= 0 ? '+' : ''}{value.toFixed(1)}
-                    </span>
+                <div key={player.displayName} className="flex items-center gap-2 py-0.5">
+                  {/* Player name - fixed width */}
+                  <div className="w-24 flex-shrink-0">
+                    <span className="text-xs font-medium truncate block text-primary-wh40k">{player.displayName}</span>
                   </div>
                   
-                  {/* Horizontal Bar Chart */}
-                  <div className="relative">
+                  {/* Chart area - flexible */}
+                  <div className="flex-1 relative">
                     <div className="absolute inset-0 flex justify-center">
-                      <div className="w-px bg-gray-300 h-full"></div>
+                      <div className="w-px bg-primary-wh40k h-full"></div>
                     </div>
                     
-                    <div className="relative flex items-center justify-center h-6">
+                    <div className="relative flex items-center justify-center h-4">
                       {isPositive ? (
-                        <div className="flex w-full justify-center">
+                        <div className="flex w-full">
                           <div className="w-1/2"></div>
-                          <div 
-                            className={`h-4 ${getBarColor(value)} transition-all duration-300`}
-                            style={{ width: `${barWidth / 2}%` }}
-                          ></div>
+                          <div className="w-1/2 flex">
+                            <div 
+                              className={`h-2 ${getBarColor(value)} transition-all duration-300`}
+                              style={{ width: `${barWidth}%` }}
+                            ></div>
+                          </div>
                         </div>
                       ) : (
-                        <div className="flex w-full justify-center">
-                          <div 
-                            className={`h-4 ${getBarColor(value)} transition-all duration-300`}
-                            style={{ width: `${barWidth / 2}%`, marginLeft: `${50 - (barWidth / 2)}%` }}
-                          ></div>
+                        <div className="flex w-full">
+                          <div className="w-1/2 flex justify-end">
+                            <div 
+                              className={`h-2 ${getBarColor(value)} transition-all duration-300`}
+                              style={{ width: `${barWidth}%` }}
+                            ></div>
+                          </div>
                           <div className="w-1/2"></div>
                         </div>
                       )}
                     </div>
                   </div>
                   
-                  <div className="flex justify-between text-xs text-gray-500">
-                    <span>{player.bossesPlayed} bosses • {player.totalBattles} battles</span>
-                    <span>Cluster: {player.avgVsCluster >= 0 ? '+' : ''}{player.avgVsCluster.toFixed(1)}% • Guild: {player.avgVsGuild >= 0 ? '+' : ''}{player.avgVsGuild.toFixed(1)}%</span>
+                  {/* Performance value - fixed width */}
+                  <div className="w-12 flex-shrink-0 text-center">
+                    <span className={`text-xs font-mono ${getTextColor(value)} block`}>
+                      {value >= 0 ? '+' : ''}{value.toFixed(1)}%
+                    </span>
+                  </div>
+                  
+                  {/* Stats column - fixed width */}
+                  <div className="w-16 flex-shrink-0 text-center text-xs text-secondary-wh40k">
+                    <div>{player.bossesPlayed}b•{player.totalBattles}bt</div>
+                  </div>
+                  
+                  {/* vs Cluster column - fixed width */}
+                  <div className="w-16 flex-shrink-0 text-center text-xs text-secondary-wh40k">
+                    <div>{player.avgVsCluster >= 0 ? '+' : ''}{player.avgVsCluster.toFixed(0)}%</div>
+                  </div>
+                  
+                  {/* vs Guild column - fixed width */}
+                  <div className="w-16 flex-shrink-0 text-center text-xs text-secondary-wh40k">
+                    <div>{player.avgVsGuild >= 0 ? '+' : ''}{player.avgVsGuild.toFixed(0)}%</div>
                   </div>
                 </div>
               )
             })}
           </div>
 
-          <div className="mt-4 pt-4 border-t border-gray-200">
-            <div className="flex justify-between text-xs text-gray-500">
+          <div className="mt-4 pt-4 border-t border-primary-wh40k">
+            <div className="flex justify-between text-xs text-secondary-wh40k">
               <span>-{chartMax.toFixed(0)}%</span>
               <span>0%</span>
               <span>+{chartMax.toFixed(0)}%</span>
@@ -448,35 +498,53 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
       {/* Boss Detail Table */}
       {showBossDetail && playerBossStats.length > 0 && (
-        <div className="bg-white rounded-lg p-4 shadow-sm">
-          <h3 className="font-semibold mb-4">Boss-by-Boss Performance Detail</h3>
+        <div className="card-wh40k p-4">
+          <h3 className="heading-wh40k">Boss-by-Boss Performance Detail</h3>
           <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
+            <table className="table-wh40k">
               <thead>
-                <tr className="border-b">
-                  <th className="text-left p-2">Player</th>
-                  <th className="text-left p-2">Boss</th>
-                  <th className="text-left p-2">Type</th>
-                  <th className="text-right p-2">Battles</th>
-                  <th className="text-right p-2">Avg Damage</th>
-                  <th className="text-right p-2">vs Cluster</th>
-                  <th className="text-right p-2">vs Guild</th>
+                <tr>
+                  <th>Player</th>
+                  <th>Boss</th>
+                  <th>Type</th>
+                  <th className="text-right">Battles</th>
+                  <th className="text-right">Avg Damage</th>
+                  <th className="text-right">Weighted Contrib</th>
+                  <th className="text-right">vs Cluster</th>
+                  <th className="text-right">vs Guild</th>
                 </tr>
               </thead>
               <tbody>
                 {playerBossStats
                   .sort((a, b) => (viewMode === 'cluster' ? b.vsClusterPct : b.vsGuildPct) - (viewMode === 'cluster' ? a.vsClusterPct : a.vsGuildPct))
                   .map((stat, i) => (
-                    <tr key={i} className="border-b">
-                      <td className="p-2 font-medium">{stat.displayName}</td>
-                      <td className="p-2">{stat.bossName}</td>
-                      <td className="p-2 text-xs">{stat.overallTokenUsage}</td>
-                      <td className="p-2 text-right">{stat.battleCount}</td>
-                      <td className="p-2 text-right">{(stat.playerAvg / 1000000).toFixed(2)}M</td>
-                      <td className={`p-2 text-right ${getTextColor(stat.vsClusterPct)}`}>
+                    <tr key={i}>
+                      <td className="font-medium">{stat.displayName}</td>
+                      <td>{stat.bossName}</td>
+                      <td className="text-xs">{stat.overallTokenUsage}</td>
+                      <td className="text-right">{stat.battleCount}</td>
+                      <td className="text-right">{(stat.playerAvg / 1000000).toFixed(2)}M</td>
+                      <td className="text-right">{(stat.weightedContribution / 1000000).toFixed(2)}M</td>
+                      <td className={`text-right ${
+                        stat.vsClusterPct >= 30 ? 'text-green-400' :
+                        stat.vsClusterPct >= 20 ? 'text-green-300' : 
+                        stat.vsClusterPct >= 10 ? 'text-yellow-400' :
+                        stat.vsClusterPct >= 0 ? 'text-yellow-300' :
+                        stat.vsClusterPct >= -10 ? 'text-orange-400' :
+                        stat.vsClusterPct >= -20 ? 'text-orange-500' :
+                        'text-red-400'
+                      }`}>
                         {stat.vsClusterPct >= 0 ? '+' : ''}{stat.vsClusterPct.toFixed(1)}%
                       </td>
-                      <td className={`p-2 text-right ${getTextColor(stat.vsGuildPct)}`}>
+                      <td className={`text-right ${
+                        stat.vsGuildPct >= 30 ? 'text-green-400' :
+                        stat.vsGuildPct >= 20 ? 'text-green-300' : 
+                        stat.vsGuildPct >= 10 ? 'text-yellow-400' :
+                        stat.vsGuildPct >= 0 ? 'text-yellow-300' :
+                        stat.vsGuildPct >= -10 ? 'text-orange-400' :
+                        stat.vsGuildPct >= -20 ? 'text-orange-500' :
+                        'text-red-400'
+                      }`}>
                         {stat.vsGuildPct >= 0 ? '+' : ''}{stat.vsGuildPct.toFixed(1)}%
                       </td>
                     </tr>
@@ -489,27 +557,27 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
 
       {/* Performance Summary */}
       {playerSummaries.length > 0 && (
-        <div className="bg-white rounded-lg p-4 shadow-sm">
-          <h3 className="font-semibold mb-3">Performance Summary</h3>
+        <div className="card-wh40k p-4">
+          <h3 className="heading-wh40k">Performance Summary</h3>
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <div className="text-green-600 font-medium">Above Average</div>
-              <div className="text-lg font-bold">
+              <div className="text-green-400 font-medium">Above Average</div>
+              <div className="text-lg font-bold text-accent-wh40k">
                 {playerSummaries.filter(p => getPerformanceValue(p) > 0).length}
               </div>
             </div>
             <div>
-              <div className="text-red-600 font-medium">Below Average</div>
-              <div className="text-lg font-bold">
+              <div className="text-red-400 font-medium">Below Average</div>
+              <div className="text-lg font-bold text-accent-wh40k">
                 {playerSummaries.filter(p => getPerformanceValue(p) < 0).length}
               </div>
             </div>
           </div>
           
-          <div className="mt-4 pt-4 border-t border-gray-200">
-            <div className="text-xs text-gray-600 space-y-1">
+          <div className="mt-4 pt-4 border-t border-primary-wh40k">
+            <div className="text-xs text-secondary-wh40k space-y-1">
               {topPlayer && (
-                <div>Top Performer: <span className="font-medium">{topPlayer.displayName}</span> ({getPerformanceValue(topPlayer) >= 0 ? '+' : ''}{getPerformanceValue(topPlayer).toFixed(1)}%)</div>
+                <div>Top Performer: <span className="font-medium text-primary-wh40k">{topPlayer.displayName}</span> ({getPerformanceValue(topPlayer) >= 0 ? '+' : ''}{getPerformanceValue(topPlayer).toFixed(1)}%)</div>
               )}
               <div>Qualified Players: {playerSummaries.length}</div>
             </div>

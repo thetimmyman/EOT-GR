@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import { addCalculatedFields, addPowerBIIndexing, CalculatedData } from '../lib/calculations'
 
 interface PlayerSearchPageProps {
   selectedGuild: string
@@ -15,8 +16,9 @@ interface PlayerStats {
   bombsUsed: number
   vsClusterAvg: number
   vsGuildAvg: number
-  bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}}
-  primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}}
+  weightedContribution: number
+  bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}}
+  primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}}
   historicalTokens: {[key: string]: number}
 }
 
@@ -76,10 +78,10 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
     console.log('Fetching stats for:', selectedPlayer, selectedGuild, selectedSeason)
 
     try {
-      // Get ALL cluster data - simplified query
+      // Get ALL cluster data - include all fields needed for calculations
       const { data: allClusterData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild')
+        .select('id, damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild, displayName, set, enemyHp, enemyHpLeft, startedOn, completedOn, timestamp, userId, encounterIndex')
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
         .gte('tier', 4)
@@ -87,10 +89,10 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         .not('Name', 'is', null)
         .limit(100000)
 
-      // Get ALL guild data - simplified query
+      // Get ALL guild data - include all fields needed for calculations
       const { data: allGuildData } = await supabase
         .from('EOT_GR_data')
-        .select('damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild')
+        .select('id, damageDealt, damageType, Name, encounterId, remainingHp, rarity, loopIndex, tier, Season, Guild, displayName, set, enemyHp, enemyHpLeft, startedOn, completedOn, timestamp, userId, encounterIndex')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
@@ -138,17 +140,22 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         .in('Season', pastSeasons)
         .limit(10000)
 
-      // Simple filtering - just exclude remainingHp = 0 (last hits)
-      const filteredClusterData = allClusterData?.filter(d => 
-        d.remainingHp !== 0 && d.damageDealt > 0 && d.Name
-      ) || []
+      // Apply PowerBI-style calculations with indexing
+      const calculatedClusterData = allClusterData ? addPowerBIIndexing(addCalculatedFields(allClusterData)) : []
+      const calculatedGuildData = allGuildData ? addPowerBIIndexing(addCalculatedFields(allGuildData)) : []
+      const calculatedPlayerData = addPowerBIIndexing(addCalculatedFields(allPlayerData))
       
-      const filteredGuildData = allGuildData?.filter(d => 
-        d.remainingHp !== 0 && d.damageDealt > 0 && d.Name
-      ) || []
+      // Filter out last hits and crashes (like PowerBI)
+      const filteredClusterData = calculatedClusterData.filter(d => 
+        d.SpecialCases !== 'Last Hit' && d.SpecialCases !== 'Crash'
+      )
       
-      const filteredPlayerBattleData = allPlayerData.filter(d => 
-        d.damageType === 'Battle' && d.remainingHp !== 0 && d.damageDealt > 0
+      const filteredGuildData = calculatedGuildData.filter(d => 
+        d.SpecialCases !== 'Last Hit' && d.SpecialCases !== 'Crash'
+      )
+      
+      const filteredPlayerBattleData = calculatedPlayerData.filter(d => 
+        d.damageType === 'Battle' && d.SpecialCases !== 'Last Hit' && d.SpecialCases !== 'Crash'
       )
 
       console.log('Filtered data counts - Cluster:', filteredClusterData.length, 'Guild:', filteredGuildData.length, 'Player Battle:', filteredPlayerBattleData.length)
@@ -166,7 +173,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredClusterData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
+          const bossRank = d.overallTokenUseage || 'Unknown'
           
           if (d.encounterId === 0) {
             if (!clusterBossData[bossName]) clusterBossData[bossName] = {}
@@ -203,7 +210,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         filteredGuildData.forEach(d => {
           const bossName = d.Name || 'Unknown'
-          const bossRank = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
+          const bossRank = d.overallTokenUseage || 'Unknown'
           
           if (d.encounterId === 0) {
             if (!guildBossData[bossName]) guildBossData[bossName] = {}
@@ -258,30 +265,34 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       const tokensUsed = filteredPlayerBattleData.length
       const bombsUsed = bombData.length
       const avgDamagePerHit = tokensUsed > 0 ? totalBattleDamage / tokensUsed : 0  // Only battle damage for average
+      const totalWeightedContribution = filteredPlayerBattleData.reduce((sum, d) => sum + (d.WeightedContribution || 0), 0)
+      const avgWeightedContribution = tokensUsed > 0 ? totalWeightedContribution / tokensUsed : 0
 
       console.log('Player stats:', { totalDamage, totalBattleDamage, tokensUsed, bombsUsed, avgDamagePerHit })
 
       // Boss and Prime stats with proper comparisons
-      const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
-      const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number}} = {}
+      const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}} = {}
+      const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}} = {}
       
       filteredPlayerBattleData.forEach(d => {
         const bossName = d.Name || 'Unknown'
         
         if (d.encounterId === 0) {
           if (!bossStats[bossName]) {
-            bossStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0 }
+            bossStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0, weightedContribution: 0 }
           }
           bossStats[bossName].damage += d.damageDealt || 0
           bossStats[bossName].tokens += 1
           bossStats[bossName].biggestHit = Math.max(bossStats[bossName].biggestHit, d.damageDealt || 0)
+          bossStats[bossName].weightedContribution += d.WeightedContribution || 0
         } else {
           if (!primeStats[bossName]) {
-            primeStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0 }
+            primeStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0, weightedContribution: 0 }
           }
           primeStats[bossName].damage += d.damageDealt || 0
           primeStats[bossName].tokens += 1
           primeStats[bossName].biggestHit = Math.max(primeStats[bossName].biggestHit, d.damageDealt || 0)
+          primeStats[bossName].weightedContribution += d.WeightedContribution || 0
         }
       })
 
@@ -292,7 +303,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const playerBossData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId === 0)
         const mostCommonRank = playerBossData.length > 0 ? 
-          (playerBossData[0].tier >= 4 ? playerBossData[0].Name : "Non-Leg.") : 
+          playerBossData[0].overallTokenUseage : 
           boss
         const comparisonKey = `${boss}_${mostCommonRank}`
         
@@ -312,7 +323,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         
         const playerPrimeData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId > 0)
         const mostCommonRank = playerPrimeData.length > 0 ? 
-          "Leg. Primes" : 
+          playerPrimeData[0].overallTokenUseage : 
           "Leg. Primes"
         const comparisonKey = `${boss}_${mostCommonRank}`
         
@@ -332,9 +343,43 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         historicalTokens[season] = seasonData.length
       })
 
-      // Calculate vs averages using battle damage average only
-      const vsClusterAvg = clusterAverage > 0 ? ((avgDamagePerHit / clusterAverage) - 1) * 100 : 0
-      const vsGuildAvg = guildAverage > 0 ? ((avgDamagePerHit / guildAverage) - 1) * 100 : 0
+      // Calculate vs averages using the same logic as PlayerPerformancePage
+      // Get the player's data grouped by boss/token usage for proper comparison
+      const playerPerformance = filteredPlayerBattleData.reduce((acc, d) => {
+        const key = `${d.Name}_${d.overallTokenUseage}`
+        if (!acc[key]) {
+          acc[key] = { total: 0, count: 0 }
+        }
+        acc[key].total += d.damageDealt || 0
+        acc[key].count += 1
+        return acc
+      }, {} as Record<string, { total: number, count: number }>)
+
+      // Calculate weighted averages based on player's actual boss encounters
+      let totalPlayerVsCluster = 0
+      let totalPlayerVsGuild = 0
+      let validComparisons = 0
+
+      Object.keys(playerPerformance).forEach(key => {
+        const playerAvg = playerPerformance[key].total / playerPerformance[key].count
+        const clusterKey = key
+        const guildKey = key
+        
+        const clusterAvg = clusterBossAverages[clusterKey] || 0
+        const guildAvg = guildBossAverages[guildKey] || 0
+        
+        if (clusterAvg > 0 && guildAvg > 0) {
+          const vsCluster = ((playerAvg / clusterAvg) - 1) * 100
+          const vsGuild = ((playerAvg / guildAvg) - 1) * 100
+          
+          totalPlayerVsCluster += vsCluster
+          totalPlayerVsGuild += vsGuild
+          validComparisons += 1
+        }
+      })
+
+      const vsClusterAvg = validComparisons > 0 ? totalPlayerVsCluster / validComparisons : 0
+      const vsGuildAvg = validComparisons > 0 ? totalPlayerVsGuild / validComparisons : 0
 
       console.log('Final performance vs averages:', { vsClusterAvg, vsGuildAvg })
 
@@ -345,6 +390,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         bombsUsed,
         vsClusterAvg,
         vsGuildAvg,
+        weightedContribution: avgWeightedContribution,
         bossStats,
         primeStats,
         historicalTokens
@@ -403,7 +449,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
           placeholder="Type player name to search..."
-          className="input-modern w-full text-base mb-4"
+          className="input-wh40k w-full text-base mb-4"
         />
         
         {searchTerm && (
@@ -448,7 +494,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
             <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
               📊 Season Overview
             </h3>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
               <div className="text-center p-4 card-modern hover-lift">
                 <div className="text-3xl font-bold text-gradient mb-2">
                   {(playerStats.totalDamage / 1000000).toFixed(1)}M
@@ -460,6 +506,12 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                   {(playerStats.avgDamagePerHit / 1000).toFixed(0)}K
                 </div>
                 <div className="text-sm font-medium text-secondary">Avg Per Hit</div>
+              </div>
+              <div className="text-center p-4 card-modern hover-lift">
+                <div className="text-3xl font-bold accent-success mb-2">
+                  {(playerStats.weightedContribution / 1000).toFixed(0)}K
+                </div>
+                <div className="text-sm font-medium text-secondary">Weighted Contrib</div>
               </div>
               <div className="text-center p-4 card-modern hover-lift">
                 <div className="text-3xl font-bold accent-cyan mb-2">
@@ -482,27 +534,31 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
               📈 Performance vs Averages
             </h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="p-6 card-modern hover-lift">
-                <div className="flex justify-between items-center mb-4">
-                  <span className="font-semibold text-secondary">vs Cluster Average</span>
-                  <span className={`badge ${getPerformanceBadge(playerStats.vsClusterAvg)}`}>
-                    {playerStats.vsClusterAvg > 0 ? '+' : ''}{playerStats.vsClusterAvg.toFixed(1)}%
-                  </span>
+              <div className="p-3 card-modern hover-lift">
+                <div className="flex items-center mb-2">
+                  <span className="text-sm font-semibold text-secondary flex-1">vs Cluster Average</span>
+                  <div className="w-16 text-center">
+                    <span className={`text-sm font-mono ${getPerformanceBadge(playerStats.vsClusterAvg)}`}>
+                      {playerStats.vsClusterAvg > 0 ? '+' : ''}{playerStats.vsClusterAvg.toFixed(1)}%
+                    </span>
+                  </div>
                 </div>
-                <div className="text-xs text-secondary mt-2">
-                  Cluster Avg: {(clusterAvg / 1000).toFixed(0)}K per hit
+                <div className="text-xs text-secondary">
+                  Cluster: {(clusterAvg / 1000).toFixed(0)}K/hit
                 </div>
               </div>
 
-              <div className="p-6 card-modern hover-lift">
-                <div className="flex justify-between items-center mb-4">
-                  <span className="font-semibold text-secondary">vs Guild Average</span>
-                  <span className={`badge ${getPerformanceBadge(playerStats.vsGuildAvg)}`}>
-                    {playerStats.vsGuildAvg > 0 ? '+' : ''}{playerStats.vsGuildAvg.toFixed(1)}%
-                  </span>
+              <div className="p-3 card-modern hover-lift">
+                <div className="flex items-center mb-2">
+                  <span className="text-sm font-semibold text-secondary flex-1">vs Guild Average</span>
+                  <div className="w-16 text-center">
+                    <span className={`text-sm font-mono ${getPerformanceBadge(playerStats.vsGuildAvg)}`}>
+                      {playerStats.vsGuildAvg > 0 ? '+' : ''}{playerStats.vsGuildAvg.toFixed(1)}%
+                    </span>
+                  </div>
                 </div>
-                <div className="text-xs text-secondary mt-2">
-                  Guild Avg: {(guildAvg / 1000).toFixed(0)}K per hit
+                <div className="text-xs text-secondary">
+                  Guild: {(guildAvg / 1000).toFixed(0)}K/hit
                 </div>
               </div>
             </div>
@@ -531,36 +587,36 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
               <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
                 ⚔️ Boss Performance (Main Bosses)
               </h3>
-              <div className="space-y-4">
+              <div className="space-y-2">
                 {Object.entries(playerStats.bossStats)
-                  .sort(([a], [b]) => a.localeCompare(b))
+                  .sort(([, a], [, b]) => b.vsClusterAvg - a.vsClusterAvg) // Sort by performance, highest to lowest
                   .map(([boss, stats]) => (
-                    <div key={boss} className="p-4 card-modern hover-lift">
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="font-semibold text-primary">{boss}</span>
-                        <div className="flex items-center space-x-4">
-                          <span className="text-sm text-secondary">
-                            {stats.tokens} tokens
+                    <div key={boss} className="p-3 card-modern hover-lift">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-semibold text-primary">{boss}</span>
+                        <div className="flex items-center space-x-3">
+                          <span className="text-xs text-secondary">
+                            {stats.tokens}t
                           </span>
-                          <span className="stat-display accent-warning">
-                            {(stats.avgDamage / 1000).toFixed(0)}K avg
+                          <span className="text-xs font-mono accent-warning">
+                            {(stats.avgDamage / 1000).toFixed(0)}K
                           </span>
                         </div>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-secondary">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-secondary">
                         <div>
                           <div className="font-medium">Biggest Hit:</div>
                           <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
                         </div>
                         <div>
                           <div className="font-medium">vs Cluster Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)} text-center`}>
                             {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
                           </div>
                         </div>
                         <div>
                           <div className="font-medium">vs Guild Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)} text-center`}>
                             {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
                           </div>
                         </div>
@@ -580,36 +636,36 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
               <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
                 🎯 Prime Performance (Side Bosses)
               </h3>
-              <div className="space-y-4">
+              <div className="space-y-2">
                 {Object.entries(playerStats.primeStats)
-                  .sort(([a], [b]) => a.localeCompare(b))
+                  .sort(([, a], [, b]) => b.vsClusterAvg - a.vsClusterAvg) // Sort by performance, highest to lowest
                   .map(([boss, stats]) => (
-                    <div key={boss} className="p-4 card-modern hover-lift">
-                      <div className="flex justify-between items-center mb-3">
-                        <span className="font-semibold text-primary">{boss} (Prime)</span>
-                        <div className="flex items-center space-x-4">
-                          <span className="text-sm text-secondary">
-                            {stats.tokens} tokens
+                    <div key={boss} className="p-3 card-modern hover-lift">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-sm font-semibold text-primary">{boss} (Prime)</span>
+                        <div className="flex items-center space-x-3">
+                          <span className="text-xs text-secondary">
+                            {stats.tokens}t
                           </span>
-                          <span className="stat-display accent-purple">
-                            {(stats.avgDamage / 1000).toFixed(0)}K avg
+                          <span className="text-xs font-mono accent-purple">
+                            {(stats.avgDamage / 1000).toFixed(0)}K
                           </span>
                         </div>
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-secondary">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-secondary">
                         <div>
                           <div className="font-medium">Biggest Hit:</div>
                           <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
                         </div>
                         <div>
                           <div className="font-medium">vs Cluster Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)} text-center`}>
                             {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
                           </div>
                         </div>
                         <div>
                           <div className="font-medium">vs Guild Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)} text-center`}>
                             {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
                           </div>
                         </div>

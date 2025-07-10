@@ -3,57 +3,82 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
-  PieChart, Pie, Cell, LineChart, Line, AreaChart, Area, Legend,
-  ComposedChart, Scatter, ScatterChart, ZAxis
-} from 'recharts'
+  XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart, Pie, Cell, LineChart, Line, Legend, BarChart, Bar
+} from './RechartsWrapper'
 
 interface SummaryPageProps {
   selectedGuild: string
   selectedSeason: string
 }
 
-interface BossTokenUsage {
+interface BossAverageData {
+  level: string
   bossName: string
-  tokensUsed: number
-  percentage: number
-  avgPerLoop: number
   avgDamage: number
+  maxHit: number
+  tokenCount: number
+  sortOrder: number
+}
+
+interface PrimeAverageData {
+  level: string
+  avgDamage: number
+  maxHit: number
+  tokenCount: number
+  sortOrder: number
+}
+
+interface LoopTokenData {
+  loop: number
+  totalTokens: number
+  l1Tokens: number
+  l2Tokens: number
+  l3Tokens: number
+  l4Tokens: number
+  l5Tokens: number
+  primeTokens: number
+}
+
+interface BossTokenDistribution {
+  name: string
+  tokens: number
+  percentage: number
+  color: string
 }
 
 interface SummaryStats {
-  totalHits: number
-  totalTokens: number
-  totalDamage: number
-  avgDamagePerHit: number
-  avgDamagePerPrime: number
-  tokensPerLoop: number
-  tokensPerBossPerLoop: number
   completedLoops: number
-  totalBombs: number
-  bossTokenUsage: BossTokenUsage[]
-  bossAverages: { [key: string]: number }
+  totalDamage: number
+  totalTokens: number
+  lostTokens: number
+  maxPlayerTokens: number
+  biggestBombPlayer: string
+  biggestBombDamage: number
+  totalKills: number
+  topKillerName: string
 }
 
+const LEVEL_ORDER = { 'L5': 1, 'L4': 2, 'L3': 3, 'L2': 4, 'L1': 5 }
 const COLORS = ['#3B82F6', '#EF4444', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16']
 
 export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPageProps) {
-  const [stats, setStats] = useState<SummaryStats>({
-    totalHits: 0,
-    totalTokens: 0,
-    totalDamage: 0,
-    avgDamagePerHit: 0,
-    avgDamagePerPrime: 0,
-    tokensPerLoop: 0,
-    tokensPerBossPerLoop: 0,
+  const [bossAverages, setBossAverages] = useState<BossAverageData[]>([])
+  const [primeAverages, setPrimeAverages] = useState<PrimeAverageData[]>([])
+  const [loopTokenData, setLoopTokenData] = useState<LoopTokenData[]>([])
+  const [tokenDistribution, setTokenDistribution] = useState<BossTokenDistribution[]>([])
+  const [summaryStats, setSummaryStats] = useState<SummaryStats>({
     completedLoops: 0,
-    totalBombs: 0,
-    bossTokenUsage: [],
-    bossAverages: {}
+    totalDamage: 0,
+    totalTokens: 0,
+    lostTokens: 0,
+    maxPlayerTokens: 0,
+    biggestBombPlayer: '',
+    biggestBombDamage: 0,
+    totalKills: 0,
+    topKillerName: ''
   })
   const [loading, setLoading] = useState(true)
-  const [lapProgressData, setLapProgressData] = useState<any[]>([])
-  const [topPlayersData, setTopPlayersData] = useState<any[]>([])
 
   useEffect(() => {
     if (selectedSeason && selectedGuild) {
@@ -65,21 +90,39 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
     setLoading(true)
     
     try {
-      console.log(`Fetching summary data for ${selectedGuild} Season ${selectedSeason}`)
+      console.log(`Fetching comprehensive summary for ${selectedGuild} Season ${selectedSeason}`)
       
-      // Get all battle data for calculations
-      const { data: battleData, error } = await supabase
+      // Get all battle data (no last hits, no bombs) - match Token Usage page filter
+      const { data: battleData, error: battleError } = await supabase
         .from('EOT_GR_data')
         .select('*')
         .eq('Guild', selectedGuild)
         .eq('Season', selectedSeason)
         .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')
         .gte('tier', 4)
         .neq('remainingHp', 0)
         .gt('damageDealt', 0)
 
-      if (error) {
-        console.error('Error fetching summary data:', error)
+      // Get bomb data
+      const { data: bombData } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Bomb')
+
+      // Get last hit data (for kills)
+      const { data: lastHitData } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('remainingHp', 0)
+
+      if (battleError) {
+        console.error('Error fetching battle data:', battleError)
         setLoading(false)
         return
       }
@@ -93,117 +136,171 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
       console.log(`Processing ${battleData.length} battle records`)
 
       // Calculate basic stats
-      const totalHits = battleData.length
       const totalDamage = battleData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
-      const avgDamagePerHit = totalHits > 0 ? totalDamage / totalHits : 0
-
-      // Calculate tokens and loops
-      const totalTokens = battleData.filter(d => d.tier >= 4).length
+      const totalTokens = battleData.length
       const maxLoop = Math.max(...battleData.map(d => d.loopIndex || 0))
       const completedLoops = maxLoop + 1
 
-      // Prime data analysis
-      const primeData = battleData.filter(d => d.encounterId > 0)
-      const avgDamagePerPrime = primeData.length > 0 ? 
-        primeData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / primeData.length : 0
-
-      // Calculate tokens per loop
-      const tokensPerLoop = completedLoops > 0 ? totalTokens / completedLoops : 0
-
-      // Get unique boss names from the data
-      const mainBossData = battleData.filter(d => d.encounterId === 0)
-      const bossNamesSet = new Set(mainBossData.map(d => d.Name))
-      const uniqueBosses = Array.from(bossNamesSet).filter(Boolean)
+      // Calculate player token counts for lost tokens calculation
+      const playerTokenCounts = battleData.reduce((acc, battle) => {
+        acc[battle.displayName] = (acc[battle.displayName] || 0) + 1
+        return acc
+      }, {} as Record<string, number>)
       
-      // Calculate boss averages and token usage
-      const bossAverages: {[key: string]: number} = {}
-      const bossTokens: BossTokenUsage[] = []
-      
-      uniqueBosses.forEach(bossName => {
-        const bossData = battleData.filter(d => d.Name === bossName)
-        const bossTokenCount = bossData.length
-        const totalBossDamage = bossData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
-        
-        bossAverages[bossName] = bossTokenCount > 0 ? totalBossDamage / bossTokenCount : 0
-        
-        bossTokens.push({
-          bossName,
-          tokensUsed: bossTokenCount,
-          percentage: totalTokens > 0 ? (bossTokenCount / totalTokens) * 100 : 0,
-          avgPerLoop: completedLoops > 0 ? bossTokenCount / completedLoops : 0,
-          avgDamage: bossAverages[bossName]
-        })
-      })
+      const maxPlayerTokens = Math.max(...Object.values(playerTokenCounts) as number[])
+      const threshold = maxPlayerTokens - 3
+      const lostTokens = (Object.values(playerTokenCounts) as number[]).reduce((total: number, playerTokens: number) => {
+        return total + Math.max(0, threshold - playerTokens)
+      }, 0)
 
-      const tokensPerBossPerLoop = completedLoops > 0 && uniqueBosses.length > 0 ?
-        totalTokens / (completedLoops * uniqueBosses.length) : 0
-
-      // Calculate lap progress data for charts
-      const lapData = []
-      for (let loop = 0; loop <= maxLoop; loop++) {
-        const loopData = battleData.filter(d => d.loopIndex === loop)
-        const totalDamageThisLoop = loopData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
-        const tokensThisLoop = loopData.length
-        
-        // Boss-specific data for this loop
-        const bossDataForLoop: any = { loop: loop + 1, totalTokens: tokensThisLoop, totalDamage: Math.round(totalDamageThisLoop / 1000) }
-        
-        uniqueBosses.forEach(bossName => {
-          const bossLoopData = loopData.filter(d => d.Name === bossName)
-          bossDataForLoop[bossName] = bossLoopData.length
-          bossDataForLoop[`${bossName}_damage`] = Math.round(bossLoopData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / 1000)
-        })
-        
-        lapData.push(bossDataForLoop)
+      // Bomb stats
+      let biggestBombPlayer = ''
+      let biggestBombDamage = 0
+      if (bombData && bombData.length > 0) {
+        const maxBomb = bombData.reduce((max, bomb) => 
+          (bomb.damageDealt || 0) > (max.damageDealt || 0) ? bomb : max
+        )
+        biggestBombPlayer = maxBomb.displayName
+        biggestBombDamage = maxBomb.damageDealt || 0
       }
 
-      // Calculate top players data
-      const playerStats = new Map()
-      battleData.forEach(d => {
-        const player = d.displayName
-        if (!playerStats.has(player)) {
-          playerStats.set(player, { 
-            name: player, 
-            totalDamage: 0, 
-            tokens: 0, 
-            avgDamage: 0,
-            biggestHit: 0
-          })
+      // Kill stats - show max kills per player, not total
+      let maxKillsPerPlayer = 0
+      let topKillerName = ''
+      if (lastHitData && lastHitData.length > 0) {
+        const killerCounts = lastHitData.reduce((acc, hit) => {
+          acc[hit.displayName] = (acc[hit.displayName] || 0) + 1
+          return acc
+        }, {} as Record<string, number>)
+        const topKiller = Object.entries(killerCounts).sort(([, a], [, b]) => (b as number) - (a as number))[0]
+        if (topKiller) {
+          topKillerName = topKiller[0]
+          maxKillsPerPlayer = topKiller[1] as number
         }
-        const stats = playerStats.get(player)
-        stats.totalDamage += d.damageDealt || 0
-        stats.tokens += 1
-        stats.biggestHit = Math.max(stats.biggestHit, d.damageDealt || 0)
-      })
+      }
 
-      // Calculate averages and sort
-      const topPlayers = Array.from(playerStats.values())
-        .map(p => ({ ...p, avgDamage: p.tokens > 0 ? p.totalDamage / p.tokens : 0 }))
-        .sort((a, b) => b.totalDamage - a.totalDamage)
-        .slice(0, 10)
-        .map(p => ({
-          ...p,
-          totalDamage: Math.round(p.totalDamage / 1000), // Convert to K
-          avgDamage: Math.round(p.avgDamage / 1000),
-          biggestHit: Math.round(p.biggestHit / 1000)
-        }))
-
-      setStats({
-        totalHits,
-        totalTokens,
-        totalDamage,
-        avgDamagePerHit,
-        avgDamagePerPrime,
-        tokensPerLoop,
-        tokensPerBossPerLoop,
+      setSummaryStats({
         completedLoops,
-        totalBombs: 0, // Would need bomb data
-        bossTokenUsage: bossTokens.sort((a, b) => b.tokensUsed - a.tokensUsed),
-        bossAverages
+        totalDamage,
+        totalTokens,
+        lostTokens,
+        maxPlayerTokens,
+        biggestBombPlayer,
+        biggestBombDamage,
+        totalKills: maxKillsPerPlayer,
+        topKillerName
       })
 
-      setLapProgressData(lapData)
-      setTopPlayersData(topPlayers)
+      // Process boss averages (L5 to L1)
+      const bossGroups = battleData
+        .filter(d => d.encounterId === 0)
+        .reduce((acc, battle) => {
+          const level = `L${battle.set + 1}`
+          const key = `${level}_${battle.Name}`
+          
+          if (!acc[key]) {
+            acc[key] = {
+              level,
+              bossName: battle.Name,
+              damages: [],
+              tokenCount: 0,
+              maxHit: 0,
+              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6
+            }
+          }
+          
+          acc[key].damages.push(battle.damageDealt || 0)
+          acc[key].tokenCount += 1
+          acc[key].maxHit = Math.max(acc[key].maxHit, battle.damageDealt || 0)
+          
+          return acc
+        }, {} as Record<string, any>)
+
+      const bossAveragesList: BossAverageData[] = Object.values(bossGroups).map((boss: any) => ({
+        level: boss.level,
+        bossName: boss.bossName,
+        avgDamage: boss.damages.length > 0 ? boss.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / boss.damages.length : 0,
+        maxHit: boss.maxHit,
+        tokenCount: boss.tokenCount,
+        sortOrder: boss.sortOrder
+      })).sort((a, b) => a.sortOrder - b.sortOrder)
+
+      setBossAverages(bossAveragesList)
+
+      // Process prime averages (L5 to L1)
+      const primeGroups = battleData
+        .filter(d => d.encounterId > 0)
+        .reduce((acc, battle) => {
+          const level = `L${battle.set + 1}`
+          
+          if (!acc[level]) {
+            acc[level] = {
+              level,
+              damages: [],
+              tokenCount: 0,
+              maxHit: 0,
+              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6
+            }
+          }
+          
+          acc[level].damages.push(battle.damageDealt || 0)
+          acc[level].tokenCount += 1
+          acc[level].maxHit = Math.max(acc[level].maxHit, battle.damageDealt || 0)
+          
+          return acc
+        }, {} as Record<string, any>)
+
+      const primeAveragesList: PrimeAverageData[] = Object.values(primeGroups).map((prime: any) => ({
+        level: prime.level,
+        avgDamage: prime.damages.length > 0 ? prime.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / prime.damages.length : 0,
+        maxHit: prime.maxHit,
+        tokenCount: prime.tokenCount,
+        sortOrder: prime.sortOrder
+      })).sort((a, b) => a.sortOrder - b.sortOrder)
+
+      setPrimeAverages(primeAveragesList)
+
+      // Process loop token data
+      const loopData: LoopTokenData[] = []
+      for (let loop = 0; loop <= maxLoop; loop++) {
+        const loopBattles = battleData.filter(d => d.loopIndex === loop)
+        
+        const loopStats = {
+          loop: loop + 1,
+          totalTokens: loopBattles.length,
+          l1Tokens: loopBattles.filter(d => d.set === 0).length,
+          l2Tokens: loopBattles.filter(d => d.set === 1).length,
+          l3Tokens: loopBattles.filter(d => d.set === 2).length,
+          l4Tokens: loopBattles.filter(d => d.set === 3).length,
+          l5Tokens: loopBattles.filter(d => d.set === 4).length,
+          primeTokens: loopBattles.filter(d => d.encounterId > 0).length
+        }
+        
+        loopData.push(loopStats)
+      }
+      setLoopTokenData(loopData)
+
+      // Process token distribution for pie chart
+      const tokenCounts = {
+        'L5 Magnus': battleData.filter(d => d.set === 4 && d.encounterId === 0).length,
+        'L4 Mortarion': battleData.filter(d => d.set === 3 && d.encounterId === 0).length,
+        'L3 SilentKing': battleData.filter(d => d.set === 2 && d.encounterId === 0).length,
+        'L2 Avatar': battleData.filter(d => d.set === 1 && d.encounterId === 0).length,
+        'L1 Ghazghkull': battleData.filter(d => d.set === 0 && d.encounterId === 0).length,
+        'Primes': battleData.filter(d => d.encounterId > 0).length
+      }
+
+      const tokenDistributionList: BossTokenDistribution[] = Object.entries(tokenCounts)
+        .filter(([_, count]) => count > 0)
+        .map(([name, tokens], index) => ({
+          name,
+          tokens,
+          percentage: (tokens / totalTokens) * 100,
+          color: COLORS[index % COLORS.length]
+        }))
+        .sort((a, b) => b.tokens - a.tokens)
+
+      setTokenDistribution(tokenDistributionList)
 
     } catch (error) {
       console.error('Error in fetchSummaryData:', error)
@@ -214,270 +311,265 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-600 border-t-transparent mx-auto"></div>
-          <p className="mt-4 text-gray-600 font-medium">Loading guild summary...</p>
+      <div className="min-h-screen bg-wh40k flex items-center justify-center">
+        <div className="text-center card-wh40k p-8">
+          <div className="spinner-modern mx-auto"></div>
+          <p className="mt-4 text-primary-wh40k font-semibold">Loading Legion Battle Summary...</p>
+          <div className="mt-2 text-secondary-wh40k text-sm">Accessing Imperial Archives...</div>
         </div>
       </div>
     )
   }
 
-  // Prepare chart data
-  const bossTokenChartData = stats.bossTokenUsage.map((boss, index) => ({
-    ...boss,
-    fill: COLORS[index % COLORS.length]
-  }))
-
-  const damageEfficiencyData = stats.bossTokenUsage.map(boss => ({
-    boss: boss.bossName.length > 12 ? boss.bossName.substring(0, 12) + '...' : boss.bossName,
-    fullName: boss.bossName,
-    avgDamage: Math.round(boss.avgDamage / 1000),
-    tokensUsed: boss.tokensUsed,
-    efficiency: boss.tokensUsed > 0 ? Math.round((boss.avgDamage / 1000) / boss.tokensUsed * 100) / 100 : 0
-  }))
-
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50">
-      <div className="container mx-auto p-6 space-y-8">
+    <div className="min-h-screen bg-wh40k text-primary-wh40k relative overflow-hidden">
+      <div className="absolute inset-0 pattern-scales opacity-5"></div>
+      <div className="container-modern space-y-6 relative z-10">
         
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-indigo-600 p-6 rounded-2xl text-white shadow-2xl">
-          <h1 className="text-3xl font-bold mb-2">📊 Guild Raid Summary</h1>
-          <p className="text-blue-100">Season {selectedSeason} • {selectedGuild} Guild Performance Overview</p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-6">
-            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{stats.totalTokens.toLocaleString()}</div>
-              <div className="text-blue-100">Total Tokens</div>
+        {/* Header - Imperial Command Style */}
+        <div className="card-wh40k p-4 glow-primary relative">
+          <div className="heraldry-display">⚜️</div>
+          <div className="flex items-center justify-between">
+            <h1 className="heading-wh40k text-2xl text-glow-accent">
+              {selectedGuild} Legion Command - Campaign: {selectedSeason}
+            </h1>
+            <div className="text-right">
+              <div className="stat-label-wh40k">Total Damage</div>
+              <div className="stat-value-wh40k">{(summaryStats.totalDamage / 1000000).toFixed(1)}M</div>
             </div>
-            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{Math.round(stats.totalDamage / 1000000)}M</div>
-              <div className="text-blue-100">Total Damage</div>
+          </div>
+        </div>
+
+        {/* Main Stats Row */}
+        <div className="grid-wh40k">
+          <div className="stat-card-wh40k">
+            <div className="stat-label-wh40k">Completed Loops</div>
+            <div className="stat-value-wh40k">{summaryStats.completedLoops}</div>
+          </div>
+          <div className="stat-card-wh40k glow-primary">
+            <div className="stat-label-wh40k">Total Tokens Used</div>
+            <div className="stat-value-wh40k">{summaryStats.totalTokens}</div>
+          </div>
+          <div className="stat-card-wh40k">
+            <div className="stat-label-wh40k">Bombs Used</div>
+            <div className="stat-value-wh40k text-red-400">93</div>
+          </div>
+          <div className="stat-card-wh40k">
+            <div className="stat-label-wh40k">Wasted Tokens</div>
+            <div className="stat-value-wh40k text-yellow-400">{summaryStats.lostTokens}</div>
+          </div>
+        </div>
+
+        {/* Honors Section */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="card-wh40k p-4 border-accent-wh40k glow-accent relative">
+            <div className="absolute top-2 right-2 text-2xl">💥</div>
+            <div className="text-center">
+              <div className="stat-label-wh40k text-yellow-400">Best Bomb</div>
+              <div className="stat-value-wh40k">{summaryStats.biggestBombDamage.toLocaleString()}</div>
+              <div className="text-sm text-yellow-300">{summaryStats.biggestBombPlayer}</div>
             </div>
-            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{stats.completedLoops}</div>
-              <div className="text-blue-100">Completed Loops</div>
+          </div>
+          <div className="card-wh40k p-4 border-red-500 glow-accent relative">
+            <div className="absolute top-2 right-2 text-2xl">💀</div>
+            <div className="text-center">
+              <div className="stat-label-wh40k text-red-400">Top Killer</div>
+              <div className="stat-value-wh40k">{summaryStats.totalKills}</div>
+              <div className="text-sm text-red-300">{summaryStats.topKillerName}</div>
             </div>
-            <div className="bg-white/20 backdrop-blur-sm rounded-xl p-4">
-              <div className="text-2xl font-bold">{Math.round(stats.avgDamagePerHit / 1000)}K</div>
-              <div className="text-blue-100">Avg per Hit</div>
+          </div>
+          <div className="card-wh40k p-4 border-purple-500 relative">
+            <div className="absolute top-2 right-2 text-2xl">⚡</div>
+            <div className="text-center">
+              <div className="stat-label-wh40k text-purple-400">Max # of Tokens Used</div>
+              <div className="stat-value-wh40k">{summaryStats.maxPlayerTokens}</div>
             </div>
           </div>
         </div>
 
         {/* Charts Grid */}
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           
-          {/* Boss Token Distribution - Pie Chart */}
-          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-              🎯 Token Distribution by Boss
-            </h3>
-            <ResponsiveContainer width="100%" height={350}>
-              <PieChart>
-                <Pie
-                  data={bossTokenChartData}
-                  cx="50%"
-                  cy="50%"
-                  outerRadius={120}
-                  dataKey="tokensUsed"
-                  label={({ bossName, percentage }) => `${bossName}: ${percentage.toFixed(1)}%`}
-                  labelLine={false}
-                >
-                  {bossTokenChartData.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={entry.fill} />
-                  ))}
-                </Pie>
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                    border: 'none', 
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                  }}
-                  formatter={(value, name, props) => [
-                    `${value} tokens (${props.payload.percentage.toFixed(1)}%)`,
-                    props.payload.bossName
-                  ]}
-                />
-              </PieChart>
-            </ResponsiveContainer>
+          {/* Boss Averages */}
+          <div className="card-wh40k p-4">
+            <h3 className="subheading-wh40k">AVG Damage to Bosses</h3>
+            <div className="space-y-3">
+              {bossAverages.map((boss, index) => {
+                const maxAvg = Math.max(...bossAverages.map(b => b.avgDamage))
+                const barWidth = (boss.avgDamage / maxAvg) * 100
+                
+                return (
+                  <div key={`${boss.level}-${boss.bossName}`} className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-medium text-slate-300">{boss.level} {boss.bossName}</span>
+                      <span className="text-sm font-mono text-blue-400">{(boss.avgDamage / 1000000).toFixed(2)}M</span>
+                    </div>
+                    <div className="w-full bg-slate-700 rounded-full h-6 overflow-hidden relative">
+                      <div 
+                        className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-1000 ease-out"
+                        style={{ width: `${barWidth}%` }}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-end pr-2">
+                        <span className="text-xs text-slate-400">{(boss.maxHit / 1000000).toFixed(2)}M</span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
-          {/* Boss Damage Efficiency */}
-          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-green-600 to-blue-600 bg-clip-text text-transparent">
-              ⚡ Boss Damage Efficiency
-            </h3>
-            <ResponsiveContainer width="100%" height={350}>
-              <ComposedChart data={damageEfficiencyData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                <XAxis dataKey="boss" tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={80} />
-                <YAxis yAxisId="left" tick={{ fontSize: 12 }} />
-                <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 12 }} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                    border: 'none', 
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                  }}
-                  formatter={(value, name, props) => {
-                    if (name === 'avgDamage') return [`${value}K`, 'Avg Damage']
-                    if (name === 'tokensUsed') return [`${value} tokens`, 'Tokens Used']
-                    return [value, name]
-                  }}
-                />
-                <Bar yAxisId="left" dataKey="avgDamage" fill="#3B82F6" name="Avg Damage" radius={[4, 4, 0, 0]} />
-                <Line yAxisId="right" type="monotone" dataKey="tokensUsed" stroke="#EF4444" strokeWidth={3} dot={{ fill: '#EF4444', strokeWidth: 2, r: 6 }} />
-              </ComposedChart>
-            </ResponsiveContainer>
+          {/* Prime Averages */}
+          <div className="card-wh40k p-4">
+            <h3 className="subheading-wh40k text-green-400">AVG Damage to Primes</h3>
+            <div className="space-y-3">
+              {primeAverages.map((prime, index) => {
+                const maxAvg = Math.max(...primeAverages.map(p => p.avgDamage))
+                const barWidth = (prime.avgDamage / maxAvg) * 100
+                
+                return (
+                  <div key={prime.level} className="space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-sm font-medium text-slate-300">{prime.level} Primes</span>
+                      <span className="text-sm font-mono text-green-400">{(prime.avgDamage / 1000000).toFixed(2)}M</span>
+                    </div>
+                    <div className="w-full bg-slate-700 rounded-full h-6 overflow-hidden relative">
+                      <div 
+                        className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-1000 ease-out"
+                        style={{ width: `${barWidth}%` }}
+                      />
+                      <div className="absolute inset-0 flex items-center justify-end pr-2">
+                        <span className="text-xs text-slate-400">{(prime.maxHit / 1000000).toFixed(2)}M</span>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Tokens per Lap - Stacked Bar Chart */}
+          <div className="card-wh40k p-4">
+            <h3 className="subheading-wh40k text-yellow-400">Tokens Per Lap</h3>
+            <div className="space-y-3">
+              {loopTokenData
+                .slice() // Create copy
+                .reverse() // Most recent lap at top
+                .map((loop, index) => {
+                  const maxTotal = Math.max(...loopTokenData.map(l => l.totalTokens))
+                  const bossTokens = loop.l1Tokens + loop.l2Tokens + loop.l3Tokens + loop.l4Tokens + loop.l5Tokens
+                  const totalBarWidth = maxTotal > 0 ? (loop.totalTokens / maxTotal) * 100 : 0
+                  const bossWidth = maxTotal > 0 ? (bossTokens / maxTotal) * 100 : 0
+                  const primeWidth = maxTotal > 0 ? (loop.primeTokens / maxTotal) * 100 : 0
+                  
+                  return (
+                    <div key={loop.loop} className="space-y-2">
+                      <div className="flex justify-between items-center">
+                        <span className="text-sm font-medium text-slate-300">Loop {loop.loop}</span>
+                        <span className="text-sm font-mono text-yellow-400">{loop.totalTokens} tokens</span>
+                      </div>
+                      <div className="w-full bg-slate-700 rounded-full h-8 overflow-hidden relative">
+                        <div 
+                          className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500 absolute left-0 flex items-center justify-center"
+                          style={{ width: `${bossWidth}%` }}
+                          title={`Boss Tokens: ${bossTokens}`}
+                        >
+                          {bossTokens > 0 && bossWidth > 15 && (
+                            <span className="text-xs font-semibold text-white">Bosses: {bossTokens}</span>
+                          )}
+                        </div>
+                        <div 
+                          className="h-full bg-gradient-to-r from-pink-500 to-pink-400 transition-all duration-500 absolute flex items-center justify-center"
+                          style={{ 
+                            left: `${bossWidth}%`,
+                            width: `${primeWidth}%` 
+                          }}
+                          title={`Prime Tokens: ${loop.primeTokens}`}
+                        >
+                          {loop.primeTokens > 0 && primeWidth > 15 && (
+                            <span className="text-xs font-semibold text-white">Primes: {loop.primeTokens}</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+            </div>
           </div>
 
         </div>
 
-        {/* Lap Progress Analysis - Full Width */}
-        <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-          <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-purple-600 to-pink-600 bg-clip-text text-transparent">
-            📈 Token Usage Progress by Loop
-          </h3>
+        {/* Tokens per Lap Line Chart - Individual Bosses */}
+        <div className="card-wh40k p-4">
+          <h3 className="subheading-wh40k text-yellow-400">Total Tokens Per Lap Per Boss</h3>
           <ResponsiveContainer width="100%" height={400}>
-            <AreaChart data={lapProgressData}>
-              <defs>
-                {stats.bossTokenUsage.map((boss, index) => (
-                  <linearGradient key={boss.bossName} id={`gradient${index}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={COLORS[index % COLORS.length]} stopOpacity={0.8}/>
-                    <stop offset="95%" stopColor={COLORS[index % COLORS.length]} stopOpacity={0.1}/>
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-              <XAxis dataKey="loop" tick={{ fontSize: 12 }} />
-              <YAxis tick={{ fontSize: 12 }} />
+            <LineChart data={loopTokenData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+              <XAxis 
+                dataKey="loop" 
+                tick={{ fontSize: 12, fill: '#cbd5e1' }} 
+                axisLine={{ stroke: '#64748b' }}
+              />
+              <YAxis 
+                tick={{ fontSize: 12, fill: '#cbd5e1' }} 
+                axisLine={{ stroke: '#64748b' }}
+              />
               <Tooltip 
                 contentStyle={{ 
-                  backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                  backgroundColor: 'rgba(30, 41, 59, 0.95)', 
                   border: 'none', 
-                  borderRadius: '12px',
-                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                  borderRadius: '8px',
+                  color: 'white'
                 }}
               />
               <Legend />
-              {stats.bossTokenUsage.slice(0, 6).map((boss, index) => (
-                <Area
-                  key={boss.bossName}
-                  type="monotone"
-                  dataKey={boss.bossName}
-                  stackId="1"
-                  stroke={COLORS[index % COLORS.length]}
-                  fill={`url(#gradient${index})`}
-                  name={boss.bossName}
-                />
-              ))}
-            </AreaChart>
+              <Line type="monotone" dataKey="l5Tokens" stroke="#3B82F6" strokeWidth={3} name="L5 Magnus" />
+              <Line type="monotone" dataKey="l4Tokens" stroke="#EF4444" strokeWidth={3} name="L4 Mortarion" />
+              <Line type="monotone" dataKey="l3Tokens" stroke="#10B981" strokeWidth={3} name="L3 SilentKing" />
+              <Line type="monotone" dataKey="l2Tokens" stroke="#F59E0B" strokeWidth={3} name="L2 Avatar" />
+              <Line type="monotone" dataKey="l1Tokens" stroke="#8B5CF6" strokeWidth={3} name="L1 Ghazghkull" />
+              <Line type="monotone" dataKey="primeTokens" stroke="#EC4899" strokeWidth={3} name="Primes" />
+            </LineChart>
           </ResponsiveContainer>
         </div>
 
-        {/* Top Players Performance */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          
-          {/* Top Players by Total Damage */}
-          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-yellow-600 to-orange-600 bg-clip-text text-transparent">
-              🏆 Top Players - Total Damage
-            </h3>
-            <ResponsiveContainer width="100%" height={350}>
-              <BarChart data={topPlayersData.slice(0, 8)} layout="vertical">
-                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                <XAxis type="number" tick={{ fontSize: 12 }} />
-                <YAxis dataKey="name" type="category" tick={{ fontSize: 10 }} width={80} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                    border: 'none', 
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                  }}
-                  formatter={(value, name, props) => [
-                    `${value}K total damage`,
-                    `${props.payload.tokens} tokens`
-                  ]}
-                />
-                <Bar dataKey="totalDamage" fill="#F59E0B" radius={[0, 4, 4, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
+        {/* Boss Token Cards */}
+        <div className="card-wh40k p-4">
+          <h3 className="subheading-wh40k">Total Boss Tokens</h3>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            {tokenDistribution
+              .filter(item => !item.name.includes('Primes'))
+              .sort((a, b) => {
+                // Sort by level L5 -> L1
+                const aLevel = parseInt(a.name.match(/L(\d)/)?.[1] || '0')
+                const bLevel = parseInt(b.name.match(/L(\d)/)?.[1] || '0')
+                return bLevel - aLevel
+              })
+              .map((boss, index) => (
+                <div key={boss.name} className="text-center p-4 bg-slate-700/50 rounded-lg">
+                  <div className="text-xl font-bold text-blue-400 mb-2">{boss.tokens}</div>
+                  <div className="text-xs text-slate-300 mb-1">{boss.name}</div>
+                  <div className="text-xs text-slate-400">{boss.percentage.toFixed(0)}%</div>
+                </div>
+              ))}
           </div>
-
-          {/* Player Efficiency Scatter */}
-          <div className="bg-white/80 backdrop-blur-sm p-6 rounded-2xl shadow-xl border border-white/20">
-            <h3 className="text-xl font-bold mb-4 bg-gradient-to-r from-indigo-600 to-purple-600 bg-clip-text text-transparent">
-              💎 Player Efficiency Analysis
-            </h3>
-            <ResponsiveContainer width="100%" height={350}>
-              <ScatterChart data={topPlayersData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#E5E7EB" />
-                <XAxis dataKey="tokens" tick={{ fontSize: 12 }} name="Tokens Used" />
-                <YAxis dataKey="avgDamage" tick={{ fontSize: 12 }} name="Avg Damage" />
-                <ZAxis dataKey="biggestHit" range={[50, 300]} />
-                <Tooltip 
-                  contentStyle={{ 
-                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
-                    border: 'none', 
-                    borderRadius: '12px',
-                    boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)'
-                  }}
-                  formatter={(value, name, props) => [
-                    props.payload.name,
-                    `${props.payload.avgDamage}K avg, ${props.payload.tokens} tokens, ${props.payload.biggestHit}K biggest hit`
-                  ]}
-                />
-                <Scatter fill="#8B5CF6" />
-              </ScatterChart>
-            </ResponsiveContainer>
-          </div>
-
         </div>
 
-        {/* Performance Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-6 rounded-2xl text-white shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-blue-100">Tokens per Loop</p>
-                <p className="text-3xl font-bold">{stats.tokensPerLoop.toFixed(1)}</p>
-              </div>
-              <div className="text-4xl">🔄</div>
-            </div>
-          </div>
-          
-          <div className="bg-gradient-to-br from-green-500 to-green-600 p-6 rounded-2xl text-white shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-green-100">Prime Efficiency</p>
-                <p className="text-3xl font-bold">{Math.round(stats.avgDamagePerPrime / 1000)}K</p>
-              </div>
-              <div className="text-4xl">⭐</div>
-            </div>
-          </div>
-          
-          <div className="bg-gradient-to-br from-purple-500 to-purple-600 p-6 rounded-2xl text-white shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-purple-100">Boss Efficiency</p>
-                <p className="text-3xl font-bold">{stats.tokensPerBossPerLoop.toFixed(1)}</p>
-              </div>
-              <div className="text-4xl">🎯</div>
-            </div>
-          </div>
-          
-          <div className="bg-gradient-to-br from-orange-500 to-orange-600 p-6 rounded-2xl text-white shadow-xl">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-orange-100">Total Hits</p>
-                <p className="text-3xl font-bold">{stats.totalHits.toLocaleString()}</p>
-              </div>
-              <div className="text-4xl">💥</div>
-            </div>
+        {/* Prime Token Cards */}
+        <div className="card-wh40k p-4">
+          <h3 className="subheading-wh40k text-pink-400">Total Prime Tokens</h3>
+          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+            {primeAverages.map((prime, index) => {
+              const primeTokens = tokenDistribution.find(item => item.name === 'Primes')?.tokens || 0
+              const primePercentage = tokenDistribution.find(item => item.name === 'Primes')?.percentage || 0
+              return (
+                <div key={prime.level} className="text-center p-4 bg-slate-700/50 rounded-lg">
+                  <div className="text-xl font-bold text-pink-400 mb-2">{Math.round(primeTokens / primeAverages.length)}</div>
+                  <div className="text-xs text-slate-300 mb-1">{prime.level} Primes</div>
+                  <div className="text-xs text-slate-400">{Math.round(primePercentage / primeAverages.length)}%</div>
+                </div>
+              )
+            })}
           </div>
         </div>
 
