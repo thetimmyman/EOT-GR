@@ -125,4 +125,4 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 
 ### External API Integration
 
-The application can be extended to integrate with external APIs for data synchronization. Refer to your game's API documentation for specific endpoints and authentication 
+The application can be extended to integrate with external APIs for data synchronization. Refer to your game's API documentation for specific endpoints and authentication requirements.

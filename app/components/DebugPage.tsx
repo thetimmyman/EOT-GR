@@ -2,6 +2,8 @@
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
+import { formatBossName } from '../lib/themeUtils'
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from './RechartsWrapper'
 
 interface DebugPageProps {
   selectedGuild: string
@@ -19,6 +21,7 @@ interface AverageData {
   tokenUsage: string
   count: number
   average: number
+  set?: number
 }
 
 const GUILD_COLORS: { [key: string]: string } = {
@@ -103,14 +106,14 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
 
       if (allData && allData.length > 0) {
         // Calculate cluster averages (all guilds)
-        const clusterMap = new Map<string, { total: number, count: number }>()
+        const clusterMap = new Map<string, { total: number, count: number, set?: number }>()
         
         allData.forEach(d => {
           const tokenUsage = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
           const key = `${d.Name}_${tokenUsage}`
           
           if (!clusterMap.has(key)) {
-            clusterMap.set(key, { total: 0, count: 0 })
+            clusterMap.set(key, { total: 0, count: 0, set: d.encounterId === 0 ? d.set : undefined })
           }
           const stats = clusterMap.get(key)!
           stats.total += d.damageDealt || 0
@@ -123,20 +126,21 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
             bossName,
             tokenUsage,
             count: stats.count,
-            average: stats.count > 0 ? stats.total / stats.count : 0
+            average: stats.count > 0 ? stats.total / stats.count : 0,
+            set: stats.set
           }
         }).sort((a, b) => a.bossName.localeCompare(b.bossName))
 
         // Calculate guild averages (selected guild only)
         const guildData = allData.filter(d => d.Guild === selectedGuild)
-        const guildMap = new Map<string, { total: number, count: number }>()
+        const guildMap = new Map<string, { total: number, count: number, set?: number }>()
         
         guildData.forEach(d => {
           const tokenUsage = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
           const key = `${d.Name}_${tokenUsage}`
           
           if (!guildMap.has(key)) {
-            guildMap.set(key, { total: 0, count: 0 })
+            guildMap.set(key, { total: 0, count: 0, set: d.encounterId === 0 ? d.set : undefined })
           }
           const stats = guildMap.get(key)!
           stats.total += d.damageDealt || 0
@@ -149,21 +153,22 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
             bossName,
             tokenUsage,
             count: stats.count,
-            average: stats.count > 0 ? stats.total / stats.count : 0
+            average: stats.count > 0 ? stats.total / stats.count : 0,
+            set: stats.set
           }
         }).sort((a, b) => a.bossName.localeCompare(b.bossName))
 
         // Calculate ALL guild averages for comparison charts
         const allGuildsData = Array.from(new Set(allData.map(d => d.Guild))).map(guild => {
           const guildRecords = allData.filter(d => d.Guild === guild)
-          const guildBossMap = new Map<string, { total: number, count: number }>()
+          const guildBossMap = new Map<string, { total: number, count: number, set?: number }>()
           
           guildRecords.forEach(d => {
             const tokenUsage = d.tier >= 4 ? (d.encounterId === 0 ? d.Name : "Leg. Primes") : "Non-Leg."
             const key = `${d.Name}_${tokenUsage}`
             
             if (!guildBossMap.has(key)) {
-              guildBossMap.set(key, { total: 0, count: 0 })
+              guildBossMap.set(key, { total: 0, count: 0, set: d.encounterId === 0 ? d.set : undefined })
             }
             const stats = guildBossMap.get(key)!
             stats.total += d.damageDealt || 0
@@ -177,6 +182,7 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
               tokenUsage,
               count: stats.count,
               average: stats.count > 0 ? stats.total / stats.count : 0,
+              set: stats.set,
               guild
             }
           })
@@ -401,6 +407,57 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
         ) : (
           <div className="space-y-8">
             
+            {/* Guild Statistics Stacked Chart */}
+            <div className="card-wh40k p-4">
+              <h3 className="subheading-wh40k text-cyan-400">
+                📊 Guild Statistics - Season {selectedSeason}
+              </h3>
+              <div className="h-72">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={guildStats}
+                    margin={{
+                      top: 20,
+                      right: 30,
+                      left: 20,
+                      bottom: 60,
+                    }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+                    <XAxis 
+                      dataKey="guild" 
+                      stroke="#94A3B8"
+                      angle={-45}
+                      textAnchor="end"
+                      height={80}
+                    />
+                    <YAxis stroke="#94A3B8" />
+                    <Tooltip 
+                      contentStyle={{
+                        backgroundColor: '#1E293B',
+                        border: '1px solid #475569',
+                        borderRadius: '6px',
+                        color: '#F1F5F9'
+                      }}
+                    />
+                    <Legend />
+                    <Bar 
+                      dataKey="activePlayers" 
+                      stackId="players" 
+                      fill="#10B981" 
+                      name="Active Players (24h)"
+                    />
+                    <Bar 
+                      dataKey="inactivePlayers" 
+                      stackId="players" 
+                      fill="#6B7280" 
+                      name="Inactive Players"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
             {/* Charts Grid */}
             <div className="grid grid-cols-1 xl:grid-cols-2 gap-8">
               
@@ -459,7 +516,7 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
             </div>
 
             {/* Top Damage Bosses for each guild */}
-            {allGuildAverages.map(guildData => {
+            {allGuildAverages.sort((a, b) => a.guild.localeCompare(b.guild)).map(guildData => {
               const guildTopBosses = guildData.averages
                 .sort((a: any, b: any) => b.average - a.average)
                 .slice(0, 6)
@@ -476,9 +533,10 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
                     (hit.damageDealt || 0) > (max.damageDealt || 0) ? hit : max
                   ) : { displayName: 'No Data', damageDealt: 0 }
                   
-                  // Add level prefix to boss name
-                  const levelPrefix = boss.tokenUsage.startsWith('L') ? boss.tokenUsage.substring(0, 2) + ' ' : ''
-                  const displayName = `${levelPrefix}${boss.bossName}`
+                  // Format boss name with proper level prefix
+                  const displayName = boss.tokenUsage === "Leg. Primes" ? 
+                    "Leg. Primes" : 
+                    (typeof boss.set === 'number' ? formatBossName(boss.bossName, boss.set) : boss.bossName)
                   
                   return {
                     name: displayName.length > 15 ? displayName.substring(0, 15) + '...' : displayName,
@@ -518,7 +576,7 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
                           </div>
                         </div>
                         <div className="mt-2 text-xs text-slate-400">
-                          Max: {boss.maxHit}M by {boss.player}
+                          Max: {boss.maxHit}M by <span className="font-bold text-yellow-300">{index < 3 ? ['🥇', '🥈', '🥉'][index] : '🏅'} {boss.player}</span>
                         </div>
                         <div className="mt-2 bg-slate-600 rounded-full h-2 overflow-hidden">
                           <div 
@@ -538,7 +596,7 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
             })}
 
             {/* Performance vs Cluster for each guild */}
-            {allGuildAverages.map(guildData => {
+            {allGuildAverages.sort((a, b) => a.guild.localeCompare(b.guild)).map(guildData => {
               const guildPerformance = guildData.averages.map((guildAvg: any) => {
                 const clusterAvg = clusterAverages.find(c => 
                   c.bossName === guildAvg.bossName && c.tokenUsage === guildAvg.tokenUsage
@@ -547,9 +605,10 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
                   ? ((guildAvg.average / clusterAvg.average) - 1) * 100 
                   : 0
                 
-                // Add level prefix to boss name
-                const levelPrefix = guildAvg.tokenUsage.startsWith('L') ? guildAvg.tokenUsage.substring(0, 2) + ' ' : ''
-                const displayName = `${levelPrefix}${guildAvg.bossName}`
+                // Format boss name with proper level prefix
+                const displayName = guildAvg.tokenUsage === "Leg. Primes" ? 
+                  "Leg. Primes" : 
+                  (typeof guildAvg.set === 'number' ? formatBossName(guildAvg.bossName, guildAvg.set) : guildAvg.bossName)
                 
                 return {
                   boss: displayName.length > 12 ? displayName.substring(0, 12) + '...' : displayName,
@@ -598,48 +657,6 @@ export default function DebugPage({ selectedGuild, selectedSeason }: DebugPagePr
               )
             })}
 
-            {/* Guild Stats Table */}
-            <div className="card-wh40k p-4">
-              <h3 className="subheading-wh40k text-cyan-400">
-                📊 Guild Statistics - Season {selectedSeason}
-              </h3>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-600">
-                      <th className="text-left py-2 text-primary-wh40k font-semibold">Guild</th>
-                      <th className="text-right py-2 text-primary-wh40k font-semibold">Total Players</th>
-                      <th className="text-right py-2 text-primary-wh40k font-semibold">Active Players (24h)</th>
-                      <th className="text-right py-2 text-primary-wh40k font-semibold">Inactive Players</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {guildStats.map((stats, index) => (
-                      <tr key={stats.guild} className={`border-b border-slate-700/50 ${index % 2 === 0 ? 'bg-slate-800/20' : ''}`}>
-                        <td className="py-2 font-bold text-accent-wh40k">{stats.guild}</td>
-                        <td className="py-2 text-right text-slate-300">{stats.totalPlayers.toLocaleString()}</td>
-                        <td className="py-2 text-right text-green-400">{stats.activePlayers.toLocaleString()}</td>
-                        <td className="py-2 text-right text-slate-400">{stats.inactivePlayers.toLocaleString()}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr className="border-t-2 border-accent-wh40k font-bold">
-                      <td className="py-2 text-accent-wh40k">TOTAL</td>
-                      <td className="py-2 text-right text-slate-300">
-                        {guildStats.reduce((sum, stats) => sum + stats.totalPlayers, 0).toLocaleString()}
-                      </td>
-                      <td className="py-2 text-right text-green-400">
-                        {guildStats.reduce((sum, stats) => sum + stats.activePlayers, 0).toLocaleString()}
-                      </td>
-                      <td className="py-2 text-right text-slate-400">
-                        {guildStats.reduce((sum, stats) => sum + stats.inactivePlayers, 0).toLocaleString()}
-                      </td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-            </div>
 
             {/* Refresh Button */}
             <div className="text-center">

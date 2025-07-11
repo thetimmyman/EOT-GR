@@ -2,6 +2,7 @@
 // Based on the DAX measures provided in CLAUDE.md
 
 import { GuildRaidData } from './supabase'
+import { formatBossName } from './themeUtils'
 
 // Helper type for calculated fields
 export interface CalculatedData extends GuildRaidData {
@@ -19,9 +20,9 @@ export interface CalculatedData extends GuildRaidData {
  */
 export function calculateBosses(data: GuildRaidData): string {
   if (data.tier >= 4) {
-    // Convert set to number, add 1, then concatenate
+    // Use the formatBossName utility for consistent formatting
     const setNumber = parseInt(data.set?.toString() || '0', 10)
-    return `L${setNumber + 1} ${data.Name}`
+    return formatBossName(data.Name, setNumber, data.tier)
   }
   return 'non-leg'
 }

@@ -6,6 +6,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, LineChart, Line, Legend, BarChart, Bar
 } from './RechartsWrapper'
+import { formatBossName, calculateLostTokens, calculateClusterAverage } from '../lib/themeUtils'
 
 interface SummaryPageProps {
   selectedGuild: string
@@ -19,6 +20,8 @@ interface BossAverageData {
   maxHit: number
   tokenCount: number
   sortOrder: number
+  clusterAvg?: number
+  guildAvg?: number
 }
 
 interface PrimeAverageData {
@@ -27,6 +30,8 @@ interface PrimeAverageData {
   maxHit: number
   tokenCount: number
   sortOrder: number
+  clusterAvg?: number
+  primeNames: string[]
 }
 
 interface LoopTokenData {
@@ -38,6 +43,13 @@ interface LoopTokenData {
   l4Tokens: number
   l5Tokens: number
   primeTokens: number
+}
+
+interface TierCombinedData {
+  tier: string
+  combined: number
+  bosses: number
+  primes: number
 }
 
 interface BossTokenDistribution {
@@ -55,6 +67,7 @@ interface SummaryStats {
   maxPlayerTokens: number
   biggestBombPlayer: string
   biggestBombDamage: number
+  totalBombs: number
   totalKills: number
   topKillerName: string
 }
@@ -66,7 +79,10 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
   const [bossAverages, setBossAverages] = useState<BossAverageData[]>([])
   const [primeAverages, setPrimeAverages] = useState<PrimeAverageData[]>([])
   const [loopTokenData, setLoopTokenData] = useState<LoopTokenData[]>([])
+  const [tierCombinedData, setTierCombinedData] = useState<TierCombinedData[]>([])
   const [tokenDistribution, setTokenDistribution] = useState<BossTokenDistribution[]>([])
+  const [primeTokensByTier, setPrimeTokensByTier] = useState<Record<string, number>>({})
+  const [primeTokensByName, setPrimeTokensByName] = useState<Record<string, {count: number, tier: string}>>({})
   const [summaryStats, setSummaryStats] = useState<SummaryStats>({
     completedLoops: 0,
     totalDamage: 0,
@@ -75,6 +91,7 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
     maxPlayerTokens: 0,
     biggestBombPlayer: '',
     biggestBombDamage: 0,
+    totalBombs: 0,
     totalKills: 0,
     topKillerName: ''
   })
@@ -92,8 +109,19 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
     try {
       console.log(`Fetching comprehensive summary for ${selectedGuild} Season ${selectedSeason}`)
       
-      // Get all battle data (no last hits, no bombs) - match Token Usage page filter
+      // Get all battle data (INCLUDING last hits for token calculations)
       const { data: battleData, error: battleError } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Guild', selectedGuild)
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')
+        .gte('tier', 4)
+        .gt('damageDealt', 0)
+
+      // Get battle data excluding last hits for averages
+      const { data: battleDataNoLastHits } = await supabase
         .from('EOT_GR_data')
         .select('*')
         .eq('Guild', selectedGuild)
@@ -121,6 +149,17 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         .eq('damageType', 'Battle')
         .eq('remainingHp', 0)
 
+      // Get cluster data for comparison
+      const { data: clusterData } = await supabase
+        .from('EOT_GR_data')
+        .select('*')
+        .eq('Season', selectedSeason)
+        .eq('damageType', 'Battle')
+        .eq('rarity', 'Legendary')
+        .gte('tier', 4)
+        .neq('remainingHp', 0)
+        .gt('damageDealt', 0)
+
       if (battleError) {
         console.error('Error fetching battle data:', battleError)
         setLoading(false)
@@ -139,24 +178,23 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
       const totalDamage = battleData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const totalTokens = battleData.length
       const maxLoop = Math.max(...battleData.map(d => d.loopIndex || 0))
-      const completedLoops = maxLoop + 1
+      const completedLoops = maxLoop // Use MAX loopIndex directly (0-based = 1 loop completed)
 
-      // Calculate player token counts for lost tokens calculation
+      // Calculate player token counts for lost tokens calculation (FIXED)
       const playerTokenCounts = battleData.reduce((acc, battle) => {
         acc[battle.displayName] = (acc[battle.displayName] || 0) + 1
         return acc
       }, {} as Record<string, number>)
       
+      const lostTokens = calculateLostTokens(playerTokenCounts)
       const maxPlayerTokens = Math.max(...Object.values(playerTokenCounts) as number[])
-      const threshold = maxPlayerTokens - 3
-      const lostTokens = (Object.values(playerTokenCounts) as number[]).reduce((total: number, playerTokens: number) => {
-        return total + Math.max(0, threshold - playerTokens)
-      }, 0)
 
-      // Bomb stats
+      // Bomb stats (FIXED - calculate from actual data)
       let biggestBombPlayer = ''
       let biggestBombDamage = 0
+      let totalBombs = 0
       if (bombData && bombData.length > 0) {
+        totalBombs = bombData.length
         const maxBomb = bombData.reduce((max, bomb) => 
           (bomb.damageDealt || 0) > (max.damageDealt || 0) ? bomb : max
         )
@@ -164,7 +202,7 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         biggestBombDamage = maxBomb.damageDealt || 0
       }
 
-      // Kill stats - show max kills per player, not total
+      // Kill stats - show max kills per player
       let maxKillsPerPlayer = 0
       let topKillerName = ''
       if (lastHitData && lastHitData.length > 0) {
@@ -187,12 +225,13 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         maxPlayerTokens,
         biggestBombPlayer,
         biggestBombDamage,
+        totalBombs,
         totalKills: maxKillsPerPlayer,
         topKillerName
       })
 
-      // Process boss averages (L5 to L1)
-      const bossGroups = battleData
+      // Process boss averages with cluster comparison (L5 to L1)
+      const bossGroups = (battleDataNoLastHits || [])
         .filter(d => d.encounterId === 0)
         .reduce((acc, battle) => {
           const level = `L${battle.set + 1}`
@@ -205,7 +244,8 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
               damages: [],
               tokenCount: 0,
               maxHit: 0,
-              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6
+              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6,
+              set: battle.set
             }
           }
           
@@ -216,19 +256,32 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
           return acc
         }, {} as Record<string, any>)
 
-      const bossAveragesList: BossAverageData[] = Object.values(bossGroups).map((boss: any) => ({
-        level: boss.level,
-        bossName: boss.bossName,
-        avgDamage: boss.damages.length > 0 ? boss.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / boss.damages.length : 0,
-        maxHit: boss.maxHit,
-        tokenCount: boss.tokenCount,
-        sortOrder: boss.sortOrder
-      })).sort((a, b) => a.sortOrder - b.sortOrder)
+      const bossAveragesList: BossAverageData[] = Object.values(bossGroups).map((boss: any) => {
+        const avgDamage = boss.damages.length > 0 ? boss.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / boss.damages.length : 0
+        
+        // Calculate cluster average for this specific boss
+        const clusterBossData = (clusterData || []).filter(d => 
+          d.encounterId === 0 && 
+          d.set === boss.set && 
+          d.Name === boss.bossName
+        )
+        const clusterAvg = calculateClusterAverage(clusterBossData, selectedGuild, 'damageDealt')
+        
+        return {
+          level: boss.level,
+          bossName: boss.bossName,
+          avgDamage,
+          maxHit: boss.maxHit,
+          tokenCount: boss.tokenCount,
+          sortOrder: boss.sortOrder,
+          clusterAvg
+        }
+      }).sort((a, b) => a.sortOrder - b.sortOrder)
 
       setBossAverages(bossAveragesList)
 
       // Process prime averages (L5 to L1)
-      const primeGroups = battleData
+      const primeGroups = (battleDataNoLastHits || [])
         .filter(d => d.encounterId > 0)
         .reduce((acc, battle) => {
           const level = `L${battle.set + 1}`
@@ -239,26 +292,65 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
               damages: [],
               tokenCount: 0,
               maxHit: 0,
-              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6
+              sortOrder: LEVEL_ORDER[level as keyof typeof LEVEL_ORDER] || 6,
+              primeNames: new Set<string>()
             }
           }
           
           acc[level].damages.push(battle.damageDealt || 0)
           acc[level].tokenCount += 1
           acc[level].maxHit = Math.max(acc[level].maxHit, battle.damageDealt || 0)
+          acc[level].primeNames.add(battle.Name || 'Unknown Prime')
           
           return acc
         }, {} as Record<string, any>)
 
-      const primeAveragesList: PrimeAverageData[] = Object.values(primeGroups).map((prime: any) => ({
-        level: prime.level,
-        avgDamage: prime.damages.length > 0 ? prime.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / prime.damages.length : 0,
-        maxHit: prime.maxHit,
-        tokenCount: prime.tokenCount,
-        sortOrder: prime.sortOrder
-      })).sort((a, b) => a.sortOrder - b.sortOrder)
+      const primeAveragesList: PrimeAverageData[] = Object.values(primeGroups).map((prime: any) => {
+        // Calculate cluster average for this tier of primes
+        const clusterPrimeData = (clusterData || []).filter(d => 
+          d.encounterId > 0 && 
+          d.set === parseInt(prime.level.substring(1)) - 1
+        )
+        const clusterAvg = calculateClusterAverage(clusterPrimeData, selectedGuild, 'damageDealt')
+        
+        return {
+          level: prime.level,
+          avgDamage: prime.damages.length > 0 ? prime.damages.reduce((sum: number, dmg: number) => sum + dmg, 0) / prime.damages.length : 0,
+          maxHit: prime.maxHit,
+          tokenCount: prime.tokenCount,
+          sortOrder: prime.sortOrder,
+          clusterAvg,
+          primeNames: Array.from(prime.primeNames) as string[]
+        }
+      }).sort((a, b) => a.sortOrder - b.sortOrder)
 
       setPrimeAverages(primeAveragesList)
+
+      // Calculate prime tokens by tier for individual sections
+      const primeTokensByTierCalc = battleData
+        .filter(d => d.encounterId > 0)
+        .reduce((acc, battle) => {
+          const level = `L${battle.set + 1}`
+          acc[level] = (acc[level] || 0) + 1
+          return acc
+        }, {} as Record<string, number>)
+      
+      setPrimeTokensByTier(primeTokensByTierCalc)
+
+      // Calculate prime tokens by individual name
+      const primeTokensByNameCalc = battleData
+        .filter(d => d.encounterId > 0)
+        .reduce((acc, battle) => {
+          const primeName = battle.Name || 'Unknown Prime'
+          const tier = `L${battle.set + 1}`
+          if (!acc[primeName]) {
+            acc[primeName] = { count: 0, tier }
+          }
+          acc[primeName].count += 1
+          return acc
+        }, {} as Record<string, {count: number, tier: string}>)
+      
+      setPrimeTokensByName(primeTokensByNameCalc)
 
       // Process loop token data
       const loopData: LoopTokenData[] = []
@@ -268,11 +360,11 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         const loopStats = {
           loop: loop + 1,
           totalTokens: loopBattles.length,
-          l1Tokens: loopBattles.filter(d => d.set === 0).length,
-          l2Tokens: loopBattles.filter(d => d.set === 1).length,
-          l3Tokens: loopBattles.filter(d => d.set === 2).length,
-          l4Tokens: loopBattles.filter(d => d.set === 3).length,
-          l5Tokens: loopBattles.filter(d => d.set === 4).length,
+          l1Tokens: loopBattles.filter(d => d.set === 0).length, // L1 bosses + L1 primes combined
+          l2Tokens: loopBattles.filter(d => d.set === 1).length, // L2 bosses + L2 primes combined
+          l3Tokens: loopBattles.filter(d => d.set === 2).length, // L3 bosses + L3 primes combined
+          l4Tokens: loopBattles.filter(d => d.set === 3).length, // L4 bosses + L4 primes combined
+          l5Tokens: loopBattles.filter(d => d.set === 4).length, // L5 bosses + L5 primes combined
           primeTokens: loopBattles.filter(d => d.encounterId > 0).length
         }
         
@@ -280,25 +372,48 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
       }
       setLoopTokenData(loopData)
 
-      // Process token distribution for pie chart
+      // Process tier combined data (bosses + primes per tier)
+      const tierCombined: TierCombinedData[] = []
+      for (let set = 0; set <= 4; set++) {
+        const tier = `L${set + 1}`
+        const tierBattles = battleData.filter(d => d.set === set)
+        const bossTokens = tierBattles.filter(d => d.encounterId === 0).length
+        const primeTokens = tierBattles.filter(d => d.encounterId > 0).length
+        
+        tierCombined.push({
+          tier,
+          combined: bossTokens + primeTokens,
+          bosses: bossTokens,
+          primes: primeTokens
+        })
+      }
+      setTierCombinedData(tierCombined.reverse()) // L5 to L1
+
+      // Process token distribution for pie chart (specific boss names)
       const tokenCounts = {
         'L5 Magnus': battleData.filter(d => d.set === 4 && d.encounterId === 0).length,
         'L4 Mortarion': battleData.filter(d => d.set === 3 && d.encounterId === 0).length,
         'L3 SilentKing': battleData.filter(d => d.set === 2 && d.encounterId === 0).length,
         'L2 Avatar': battleData.filter(d => d.set === 1 && d.encounterId === 0).length,
-        'L1 Ghazghkull': battleData.filter(d => d.set === 0 && d.encounterId === 0).length,
-        'Primes': battleData.filter(d => d.encounterId > 0).length
+        'L1 Ghazghkull': battleData.filter(d => d.set === 0 && d.encounterId === 0).length
       }
+
+      const bossTokensOnly = Object.values(tokenCounts).reduce((sum, count) => sum + count, 0)
 
       const tokenDistributionList: BossTokenDistribution[] = Object.entries(tokenCounts)
         .filter(([_, count]) => count > 0)
         .map(([name, tokens], index) => ({
           name,
           tokens,
-          percentage: (tokens / totalTokens) * 100,
+          percentage: bossTokensOnly > 0 ? (tokens / bossTokensOnly) * 100 : 0,
           color: COLORS[index % COLORS.length]
         }))
-        .sort((a, b) => b.tokens - a.tokens)
+        .sort((a, b) => {
+          // Sort L5 to L1
+          const aLevel = parseInt(a.name.match(/L(\d)/)?.[1] || '0')
+          const bLevel = parseInt(b.name.match(/L(\d)/)?.[1] || '0')
+          return bLevel - aLevel
+        })
 
       setTokenDistribution(tokenDistributionList)
 
@@ -331,7 +446,7 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
           <div className="heraldry-display">⚜️</div>
           <div className="flex items-center justify-between">
             <h1 className="heading-wh40k text-2xl text-glow-accent">
-              {selectedGuild} Legion Command - Campaign: {selectedSeason}
+              {selectedGuild}&apos;s Command Center - Campaign: {selectedSeason}
             </h1>
             <div className="text-right">
               <div className="stat-label-wh40k">Total Damage</div>
@@ -352,7 +467,7 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
           </div>
           <div className="stat-card-wh40k">
             <div className="stat-label-wh40k">Bombs Used</div>
-            <div className="stat-value-wh40k text-red-400">93</div>
+            <div className="stat-value-wh40k text-red-400">{summaryStats.totalBombs}</div>
           </div>
           <div className="stat-card-wh40k">
             <div className="stat-label-wh40k">Wasted Tokens</div>
@@ -390,28 +505,36 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         {/* Charts Grid */}
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           
-          {/* Boss Averages */}
+          {/* Boss Averages with Guild vs Cluster Indicators */}
           <div className="card-wh40k p-4">
-            <h3 className="subheading-wh40k">AVG Damage to Bosses</h3>
+            <h3 className="subheading-wh40k">AVG vs MAX Damage to Bosses</h3>
             <div className="space-y-3">
               {bossAverages.map((boss, index) => {
                 const maxAvg = Math.max(...bossAverages.map(b => b.avgDamage))
                 const barWidth = (boss.avgDamage / maxAvg) * 100
+                const vsCluster = boss.clusterAvg ? ((boss.avgDamage / boss.clusterAvg) - 1) * 100 : 0
                 
                 return (
                   <div key={`${boss.level}-${boss.bossName}`} className="space-y-1">
                     <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-slate-300">{boss.level} {boss.bossName}</span>
-                      <span className="text-sm font-mono text-blue-400">{(boss.avgDamage / 1000000).toFixed(2)}M</span>
+                      <span className="text-sm font-medium text-slate-300">
+                        {formatBossName(boss.bossName, parseInt(boss.level.substring(1)) - 1)}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-blue-400">AVG: {(boss.avgDamage / 1000000).toFixed(2)}M</span>
+                        <span className="text-xs text-slate-400">MAX: {(boss.maxHit / 1000000).toFixed(2)}M</span>
+                        {vsCluster !== 0 && (
+                          <span className={`text-xs px-1 rounded ${vsCluster > 0 ? 'text-green-400 bg-green-400/20' : 'text-red-400 bg-red-400/20'}`}>
+                            vsCluster {vsCluster > 0 ? '+' : ''}{vsCluster.toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="w-full bg-slate-700 rounded-full h-6 overflow-hidden relative">
                       <div 
                         className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-1000 ease-out"
                         style={{ width: `${barWidth}%` }}
                       />
-                      <div className="absolute inset-0 flex items-center justify-end pr-2">
-                        <span className="text-xs text-slate-400">{(boss.maxHit / 1000000).toFixed(2)}M</span>
-                      </div>
                     </div>
                   </div>
                 )
@@ -421,26 +544,37 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
 
           {/* Prime Averages */}
           <div className="card-wh40k p-4">
-            <h3 className="subheading-wh40k text-green-400">AVG Damage to Primes</h3>
+            <h3 className="subheading-wh40k text-green-400">AVG vs MAX Damage to Primes</h3>
             <div className="space-y-3">
               {primeAverages.map((prime, index) => {
                 const maxAvg = Math.max(...primeAverages.map(p => p.avgDamage))
                 const barWidth = (prime.avgDamage / maxAvg) * 100
+                const vsCluster = prime.clusterAvg ? ((prime.avgDamage / prime.clusterAvg) - 1) * 100 : 0
                 
                 return (
                   <div key={prime.level} className="space-y-1">
                     <div className="flex justify-between items-center">
-                      <span className="text-sm font-medium text-slate-300">{prime.level} Primes</span>
-                      <span className="text-sm font-mono text-green-400">{(prime.avgDamage / 1000000).toFixed(2)}M</span>
+                      <div className="flex flex-col">
+                        <span className="text-sm font-medium text-slate-300">{prime.level} Primes</span>
+                        <span className="text-xs text-slate-400">
+                          {prime.primeNames.join(', ')}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-green-400">AVG: {(prime.avgDamage / 1000000).toFixed(2)}M</span>
+                        <span className="text-xs text-slate-400">MAX: {(prime.maxHit / 1000000).toFixed(2)}M</span>
+                        {vsCluster !== 0 && (
+                          <span className={`text-xs px-1 rounded ${vsCluster > 0 ? 'text-green-400 bg-green-400/20' : 'text-red-400 bg-red-400/20'}`}>
+                            vsCluster {vsCluster > 0 ? '+' : ''}{vsCluster.toFixed(0)}%
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div className="w-full bg-slate-700 rounded-full h-6 overflow-hidden relative">
                       <div 
                         className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-1000 ease-out"
                         style={{ width: `${barWidth}%` }}
                       />
-                      <div className="absolute inset-0 flex items-center justify-end pr-2">
-                        <span className="text-xs text-slate-400">{(prime.maxHit / 1000000).toFixed(2)}M</span>
-                      </div>
                     </div>
                   </div>
                 )
@@ -451,6 +585,17 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
           {/* Tokens per Lap - Stacked Bar Chart */}
           <div className="card-wh40k p-4">
             <h3 className="subheading-wh40k text-yellow-400">Tokens Per Lap</h3>
+            {loopTokenData.length > 0 && (
+              <div className="mb-4 p-3 bg-slate-800/50 rounded-lg border border-slate-600">
+                <div className="text-center text-sm">
+                  <span className="text-blue-400 font-semibold">Bosses: {loopTokenData.reduce((sum, loop) => sum + (loop.l1Tokens + loop.l2Tokens + loop.l3Tokens + loop.l4Tokens + loop.l5Tokens), 0)}</span>
+                  <span className="mx-3 text-slate-400">•</span>
+                  <span className="text-pink-400 font-semibold">Primes: {loopTokenData.reduce((sum, loop) => sum + loop.primeTokens, 0)}</span>
+                  <span className="mx-3 text-slate-400">•</span>
+                  <span className="text-yellow-400 font-semibold">Total: {loopTokenData.reduce((sum, loop) => sum + loop.totalTokens, 0)}</span>
+                </div>
+              </div>
+            )}
             <div className="space-y-3">
               {loopTokenData
                 .slice() // Create copy
@@ -466,7 +611,9 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
                     <div key={loop.loop} className="space-y-2">
                       <div className="flex justify-between items-center">
                         <span className="text-sm font-medium text-slate-300">Loop {loop.loop}</span>
-                        <span className="text-sm font-mono text-yellow-400">{loop.totalTokens} tokens</span>
+                        <span className="text-xs text-slate-300">
+                          <span className="text-blue-400">Bosses: {bossTokens}</span> <span className="mx-1 text-slate-400">•</span> <span className="text-pink-400">Primes: {loop.primeTokens}</span> <span className="mx-1 text-slate-400">•</span> <span className="text-yellow-400">Total: {loop.totalTokens}</span>
+                        </span>
                       </div>
                       <div className="w-full bg-slate-700 rounded-full h-8 overflow-hidden relative">
                         <div 
@@ -499,9 +646,9 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
 
         </div>
 
-        {/* Tokens per Lap Line Chart - Individual Bosses */}
+        {/* Tokens per Lap Line Chart - Individual Bosses Only */}
         <div className="card-wh40k p-4">
-          <h3 className="subheading-wh40k text-yellow-400">Total Tokens Per Lap Per Boss</h3>
+          <h3 className="subheading-wh40k text-yellow-400">Total Tokens per Lap per Boss (Bosses Only)</h3>
           <ResponsiveContainer width="100%" height={400}>
             <LineChart data={loopTokenData}>
               <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
@@ -528,8 +675,40 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
               <Line type="monotone" dataKey="l3Tokens" stroke="#10B981" strokeWidth={3} name="L3 SilentKing" />
               <Line type="monotone" dataKey="l2Tokens" stroke="#F59E0B" strokeWidth={3} name="L2 Avatar" />
               <Line type="monotone" dataKey="l1Tokens" stroke="#8B5CF6" strokeWidth={3} name="L1 Ghazghkull" />
-              <Line type="monotone" dataKey="primeTokens" stroke="#EC4899" strokeWidth={3} name="Primes" />
             </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* Combined Tier Tokens Chart - Stacked Bar per Lap */}
+        <div className="card-wh40k p-4">
+          <h3 className="subheading-wh40k text-purple-400">Combined Tokens per Lap (Stacked by Tier)</h3>
+          <ResponsiveContainer width="100%" height={400}>
+            <BarChart data={loopTokenData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#475569" />
+              <XAxis 
+                dataKey="loop" 
+                tick={{ fontSize: 12, fill: '#cbd5e1' }} 
+                axisLine={{ stroke: '#64748b' }}
+              />
+              <YAxis 
+                tick={{ fontSize: 12, fill: '#cbd5e1' }} 
+                axisLine={{ stroke: '#64748b' }}
+              />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: 'rgba(30, 41, 59, 0.95)', 
+                  border: 'none', 
+                  borderRadius: '8px',
+                  color: 'white'
+                }}
+              />
+              <Legend />
+              <Bar dataKey="l5Tokens" stackId="a" fill="#3B82F6" name="L5 (Bosses + Primes)" />
+              <Bar dataKey="l4Tokens" stackId="a" fill="#EF4444" name="L4 (Bosses + Primes)" />
+              <Bar dataKey="l3Tokens" stackId="a" fill="#10B981" name="L3 (Bosses + Primes)" />
+              <Bar dataKey="l2Tokens" stackId="a" fill="#F59E0B" name="L2 (Bosses + Primes)" />
+              <Bar dataKey="l1Tokens" stackId="a" fill="#8B5CF6" name="L1 (Bosses + Primes)" />
+            </BarChart>
           </ResponsiveContainer>
         </div>
 
@@ -537,39 +716,35 @@ export default function SummaryPage({ selectedGuild, selectedSeason }: SummaryPa
         <div className="card-wh40k p-4">
           <h3 className="subheading-wh40k">Total Boss Tokens</h3>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            {tokenDistribution
-              .filter(item => !item.name.includes('Primes'))
-              .sort((a, b) => {
-                // Sort by level L5 -> L1
-                const aLevel = parseInt(a.name.match(/L(\d)/)?.[1] || '0')
-                const bLevel = parseInt(b.name.match(/L(\d)/)?.[1] || '0')
-                return bLevel - aLevel
-              })
-              .map((boss, index) => (
-                <div key={boss.name} className="text-center p-4 bg-slate-700/50 rounded-lg">
-                  <div className="text-xl font-bold text-blue-400 mb-2">{boss.tokens}</div>
-                  <div className="text-xs text-slate-300 mb-1">{boss.name}</div>
-                  <div className="text-xs text-slate-400">{boss.percentage.toFixed(0)}%</div>
-                </div>
-              ))}
+            {tokenDistribution.map((boss, index) => (
+              <div key={boss.name} className="text-center p-4 bg-slate-700/50 rounded-lg">
+                <div className="text-xl font-bold text-blue-400 mb-2">{boss.tokens}</div>
+                <div className="text-xs text-slate-300 mb-1">{boss.name}</div>
+                <div className="text-xs text-slate-400">{boss.percentage.toFixed(0)}%</div>
+              </div>
+            ))}
           </div>
         </div>
 
-        {/* Prime Token Cards */}
+        {/* Prime Token Cards - Individual by Name */}
         <div className="card-wh40k p-4">
           <h3 className="subheading-wh40k text-pink-400">Total Prime Tokens</h3>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            {primeAverages.map((prime, index) => {
-              const primeTokens = tokenDistribution.find(item => item.name === 'Primes')?.tokens || 0
-              const primePercentage = tokenDistribution.find(item => item.name === 'Primes')?.percentage || 0
-              return (
-                <div key={prime.level} className="text-center p-4 bg-slate-700/50 rounded-lg">
-                  <div className="text-xl font-bold text-pink-400 mb-2">{Math.round(primeTokens / primeAverages.length)}</div>
-                  <div className="text-xs text-slate-300 mb-1">{prime.level} Primes</div>
-                  <div className="text-xs text-slate-400">{Math.round(primePercentage / primeAverages.length)}%</div>
-                </div>
-              )
-            })}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+            {Object.entries(primeTokensByName)
+              .sort(([,a], [,b]) => b.count - a.count)
+              .map(([primeName, primeData]) => {
+                const totalPrimeTokens = Object.values(primeTokensByName).reduce((sum, data) => sum + data.count, 0)
+                const percentage = totalPrimeTokens > 0 ? (primeData.count / totalPrimeTokens) * 100 : 0
+                
+                return (
+                  <div key={primeName} className="text-center p-3 bg-slate-700/50 rounded-lg">
+                    <div className="text-lg font-bold text-pink-400 mb-1">{primeData.count}</div>
+                    <div className="text-xs text-slate-300 mb-1">{primeData.tier} {primeName}</div>
+                    <div className="text-xs text-slate-400">{percentage.toFixed(0)}%</div>
+                  </div>
+                )
+              })
+            }
           </div>
         </div>
 
