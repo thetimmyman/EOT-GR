@@ -3,6 +3,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { addCalculatedFields, addPowerBIIndexing, CalculatedData } from '../lib/calculations'
+import { 
+  ResponsiveContainer, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Legend
+} from './RechartsWrapper'
+import { formatBossName, formatNumber } from '../lib/themeUtils'
 
 interface PlayerPerformancePageProps {
   selectedGuild: string
@@ -28,6 +32,13 @@ interface PlayerSummary {
   avgVsGuild: number
   totalBattles: number
   bossesPlayed: number
+}
+
+interface RadarData {
+  boss: string
+  playerAvg: number // Now represents Guild Average (reusing existing field)
+  guildAvg: number  // Now represents Cluster Average (reusing existing field)
+  tier: number
 }
 
 // Simplified SpecialCases logic - handle missing fields gracefully
@@ -75,15 +86,16 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
   const [playerBossStats, setPlayerBossStats] = useState<PlayerBossStats[]>([])
   const [playerSummaries, setPlayerSummaries] = useState<PlayerSummary[]>([])
   const [loading, setLoading] = useState(true)
-  const [viewMode, setViewMode] = useState<'cluster' | 'guild'>('cluster')
+  const [viewMode, setViewMode] = useState<'cluster' | 'guild' | 'cluster-bosses' | 'guild-bosses'>('guild')
   const [showBossDetail, setShowBossDetail] = useState(false)
   const [chartData, setChartData] = useState<any[]>([])
+  const [radarData, setRadarData] = useState<RadarData[]>([])
 
   useEffect(() => {
     if (selectedSeason && selectedGuild) {
       fetchPlayerPerformance()
     }
-  }, [selectedGuild, selectedSeason])
+  }, [selectedGuild, selectedSeason, viewMode])
 
   const fetchPlayerPerformance = async () => {
     setLoading(true)
@@ -135,9 +147,15 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       console.log('Sample calculated record:', indexedData[0])
 
       // Filter out last hits and crashes (like PowerBI)
-      const filteredData = indexedData.filter(d => 
+      let filteredData = indexedData.filter(d => 
         d.SpecialCases !== 'Last Hit' && d.SpecialCases !== 'Crash'
       )
+
+      // For boss-only modes, filter out primes (encounterId > 0)
+      if (viewMode === 'cluster-bosses' || viewMode === 'guild-bosses') {
+        filteredData = filteredData.filter(d => d.encounterId === 0)
+        console.log('After boss-only filtering:', filteredData.length, 'records')
+      }
 
       console.log('After filtering (no last hits/crashes):', filteredData.length, 'records')
 
@@ -264,8 +282,8 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
           bossesPlayed: data.bossesPlayed
         }))
         .sort((a, b) => {
-          const aValue = viewMode === 'cluster' ? a.avgVsCluster : a.avgVsGuild
-          const bValue = viewMode === 'cluster' ? b.avgVsCluster : b.avgVsGuild
+          const aValue = (viewMode === 'cluster' || viewMode === 'cluster-bosses') ? a.avgVsCluster : a.avgVsGuild
+          const bValue = (viewMode === 'cluster' || viewMode === 'cluster-bosses') ? b.avgVsCluster : b.avgVsGuild
           return bValue - aValue
         })
 
@@ -281,8 +299,52 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         console.log('Sample boss result:', playerBossResults[0])
       }
 
+      // Prepare radar chart data for Guild vs Cluster Average for each boss
+      const radarChartData: RadarData[] = []
+      
+      // Group boss stats by boss name to get tier information and averages
+      const bossData = new Map<string, { tier: number, guildAvg: number, clusterAvg: number }>()
+      
+      playerBossResults.forEach(boss => {
+        if (!bossData.has(boss.bossName)) {
+          bossData.set(boss.bossName, {
+            tier: Math.floor(Math.random() * 5) + 1, // We'll get the actual tier from the data
+            guildAvg: boss.guildAvg,
+            clusterAvg: boss.clusterAvg
+          })
+        }
+      })
+      
+      // Get actual tier information from filteredData
+      const bossTiers = new Map<string, number>()
+      filteredData.forEach(d => {
+        if (d.encounterId === 0 && d.Name) {
+          bossTiers.set(d.Name, d.tier || 5)
+        }
+      })
+      
+      // Create radar data for each boss with sufficient data
+      bossData.forEach((data, bossName) => {
+        if (data.guildAvg > 0 && data.clusterAvg > 0) { // Only include bosses with valid averages
+          const tier = bossTiers.get(bossName) || 5
+          
+          radarChartData.push({
+            boss: `L${tier} ${bossName}`,
+            playerAvg: Math.round(data.guildAvg / 1000), // Using playerAvg field for guild avg (convert to K)
+            guildAvg: Math.round(data.clusterAvg / 1000), // Using guildAvg field for cluster avg (convert to K)
+            tier
+          })
+        }
+      })
+      
+      // Sort by tier for consistent ordering
+      radarChartData.sort((a, b) => a.tier - b.tier || a.boss.localeCompare(b.boss))
+      
+      console.log('Radar chart data:', radarChartData)
+
       setPlayerBossStats(playerBossResults)
       setPlayerSummaries(playerSummaryResults)
+      setRadarData(radarChartData)
       setLoading(false)
 
     } catch (error) {
@@ -292,7 +354,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
   }
 
   const getPerformanceValue = (player: PlayerSummary) => {
-    return viewMode === 'cluster' ? player.avgVsCluster : player.avgVsGuild
+    return (viewMode === 'cluster' || viewMode === 'cluster-bosses') ? player.avgVsCluster : player.avgVsGuild
   }
 
   const getBarColor = (value: number) => {
@@ -337,26 +399,46 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
         <div className="space-y-3">
           <div>
             <label className="block text-sm font-medium mb-2 text-accent-wh40k">Compare Against:</label>
-            <div className="flex bg-card-bg rounded-lg p-1 border border-primary-wh40k">
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setViewMode('guild')}
+                className={`px-3 py-2 rounded text-sm font-medium transition-all duration-300 border ${
+                  viewMode === 'guild'
+                    ? 'bg-accent-wh40k text-black border-accent-wh40k'
+                    : 'text-primary-wh40k hover:text-accent-wh40k border-primary-wh40k hover:border-accent-wh40k'
+                }`}
+              >
+                Guild Average
+              </button>
+              <button
+                onClick={() => setViewMode('guild-bosses')}
+                className={`px-3 py-2 rounded text-sm font-medium transition-all duration-300 border ${
+                  viewMode === 'guild-bosses'
+                    ? 'bg-accent-wh40k text-black border-accent-wh40k'
+                    : 'text-primary-wh40k hover:text-accent-wh40k border-primary-wh40k hover:border-accent-wh40k'
+                }`}
+              >
+                Guild Average (Bosses Only)
+              </button>
               <button
                 onClick={() => setViewMode('cluster')}
-                className={`flex-1 px-3 py-2 rounded text-sm font-medium transition-all duration-300 ${
+                className={`px-3 py-2 rounded text-sm font-medium transition-all duration-300 border ${
                   viewMode === 'cluster'
-                    ? 'bg-accent-wh40k text-black'
-                    : 'text-primary-wh40k hover:text-accent-wh40k'
+                    ? 'bg-accent-wh40k text-black border-accent-wh40k'
+                    : 'text-primary-wh40k hover:text-accent-wh40k border-primary-wh40k hover:border-accent-wh40k'
                 }`}
               >
                 Cluster Average
               </button>
               <button
-                onClick={() => setViewMode('guild')}
-                className={`flex-1 px-3 py-2 rounded text-sm font-medium transition-all duration-300 ${
-                  viewMode === 'guild'
-                    ? 'bg-accent-wh40k text-black'
-                    : 'text-primary-wh40k hover:text-accent-wh40k'
+                onClick={() => setViewMode('cluster-bosses')}
+                className={`px-3 py-2 rounded text-sm font-medium transition-all duration-300 border ${
+                  viewMode === 'cluster-bosses'
+                    ? 'bg-accent-wh40k text-black border-accent-wh40k'
+                    : 'text-primary-wh40k hover:text-accent-wh40k border-primary-wh40k hover:border-accent-wh40k'
                 }`}
               >
-                Guild Average
+                Cluster Average (Bosses Only)
               </button>
             </div>
           </div>
@@ -389,7 +471,12 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
       {playerSummaries.length > 0 && (
         <div className="card-wh40k p-4">
           <h3 className="heading-wh40k">
-            Average Performance vs {viewMode === 'cluster' ? "Cluster" : "Guild"} [%]
+            Average Performance vs {
+              viewMode === 'cluster' ? "Cluster" : 
+              viewMode === 'cluster-bosses' ? "Cluster (Bosses Only)" :
+              viewMode === 'guild' ? "Guild" : 
+              "Guild (Bosses Only)"
+            } [%]
           </h3>
           
           {/* Column Headers */}
@@ -469,7 +556,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
                   
                   {/* Stats column - fixed width */}
                   <div className="w-16 flex-shrink-0 text-center text-xs text-secondary-wh40k">
-                    <div>{player.bossesPlayed}b•{player.totalBattles}bt</div>
+                    <div>{player.bossesPlayed}b•{player.totalBattles} battles</div>
                   </div>
                   
                   {/* vs Cluster column - fixed width */}
@@ -507,7 +594,7 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
                   <th>Player</th>
                   <th>Boss</th>
                   <th>Type</th>
-                  <th className="text-right">Battles</th>
+                  <th className="text-right">Tokens</th>
                   <th className="text-right">Avg Damage</th>
                   <th className="text-right">Weighted Contrib</th>
                   <th className="text-right">vs Cluster</th>
@@ -516,15 +603,37 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
               </thead>
               <tbody>
                 {playerBossStats
-                  .sort((a, b) => (viewMode === 'cluster' ? b.vsClusterPct : b.vsGuildPct) - (viewMode === 'cluster' ? a.vsClusterPct : a.vsGuildPct))
-                  .map((stat, i) => (
+                  .sort((a, b) => {
+                    const isClusterMode = (viewMode === 'cluster' || viewMode === 'cluster-bosses')
+                    return (isClusterMode ? b.vsClusterPct : b.vsGuildPct) - (isClusterMode ? a.vsClusterPct : a.vsGuildPct)
+                  })
+                  .map((stat, i) => {
+                    // Get tier from boss name or default to 5
+                    const bossNameParts = stat.bossName.split(' ')
+                    const tier = bossNameParts[0]?.startsWith('L') ? bossNameParts[0] : 'L5'
+                    const cleanBossName = bossNameParts[0]?.startsWith('L') ? bossNameParts.slice(1).join(' ') : stat.bossName
+                    const displayBossName = tier.startsWith('L') ? `${tier} ${cleanBossName}` : `L5 ${stat.bossName}`
+                    
+                    // Format damage with comma if over 1000K
+                    const formatDamage = (damage: number) => {
+                      const millions = damage / 1000000
+                      if (millions >= 1000) {
+                        return `${(millions / 1000).toFixed(1).replace(/\.0$/, '')},${String(Math.round(millions % 1000)).padStart(3, '0')}M`
+                      }
+                      return `${millions.toFixed(2)}M`
+                    }
+                    
+                    // Format token usage
+                    const tokenText = stat.battleCount === 1 ? 'token' : 'tokens'
+                    
+                    return (
                     <tr key={i}>
                       <td className="font-medium">{stat.displayName}</td>
-                      <td>{stat.bossName}</td>
+                      <td>{displayBossName}</td>
                       <td className="text-xs">{stat.overallTokenUsage}</td>
                       <td className="text-right">{stat.battleCount}</td>
-                      <td className="text-right">{(stat.playerAvg / 1000000).toFixed(2)}M</td>
-                      <td className="text-right">{(stat.weightedContribution / 1000000).toFixed(2)}M</td>
+                      <td className="text-right">{formatDamage(stat.playerAvg)}</td>
+                      <td className="text-right">{formatDamage(stat.weightedContribution)}</td>
                       <td className={`text-right ${
                         stat.vsClusterPct >= 30 ? 'text-green-400' :
                         stat.vsClusterPct >= 20 ? 'text-green-300' : 
@@ -548,18 +657,21 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
                         {stat.vsGuildPct >= 0 ? '+' : ''}{stat.vsGuildPct.toFixed(1)}%
                       </td>
                     </tr>
-                  ))}
+                    )
+                  })}
               </tbody>
             </table>
           </div>
         </div>
       )}
 
-      {/* Performance Summary */}
+      {/* Performance vs Averages */}
       {playerSummaries.length > 0 && (
         <div className="card-wh40k p-4">
-          <h3 className="heading-wh40k">Performance Summary</h3>
-          <div className="grid grid-cols-2 gap-4 text-sm">
+          <h3 className="heading-wh40k">Performance vs Averages</h3>
+          
+          {/* Performance Summary Cards */}
+          <div className="grid grid-cols-2 gap-4 text-sm mb-6">
             <div>
               <div className="text-green-400 font-medium">Above Average</div>
               <div className="text-lg font-bold text-accent-wh40k">
@@ -574,7 +686,59 @@ export default function PlayerPerformancePage({ selectedGuild, selectedSeason }:
             </div>
           </div>
           
-          <div className="mt-4 pt-4 border-t border-primary-wh40k">
+          {/* Radar Chart: Guild vs Cluster Average Performance by Boss */}
+          {radarData && radarData.length > 0 && (
+            <div className="mb-6">
+              <div className="bg-slate-900/80 rounded-lg p-2">
+                <ResponsiveContainer width="100%" height={450}>
+                  <RadarChart data={radarData} margin={{ top: 10, right: 40, bottom: 10, left: 40 }}>
+                    <PolarGrid 
+                      stroke="#374151" 
+                      strokeWidth={1}
+                      radialLines={true}
+                    />
+                    <PolarAngleAxis 
+                      dataKey="boss" 
+                      tick={{ fontSize: 11, fill: '#e2e8f0', fontWeight: 500 }}
+                      className="text-slate-200"
+                    />
+                    <PolarRadiusAxis 
+                      tick={{ fontSize: 9, fill: '#94a3b8' }} 
+                      tickCount={6}
+                      domain={[0, 'dataMax + 10']}
+                      angle={90}
+                    />
+                    <Radar
+                      name="Guild Average"
+                      dataKey="playerAvg"
+                      stroke="#10B981"
+                      fill="#10B981"
+                      fillOpacity={0.4}
+                      strokeWidth={3}
+                      dot={{ r: 5, fill: '#10B981', strokeWidth: 2, stroke: '#047857' }}
+                    />
+                    <Radar
+                      name="Cluster Average"
+                      dataKey="guildAvg"
+                      stroke="#F59E0B"
+                      fill="#F59E0B"
+                      fillOpacity={0.15}
+                      strokeWidth={3}
+                      strokeDasharray="8 4"
+                      dot={{ r: 4, fill: '#F59E0B', strokeWidth: 2, stroke: '#D97706' }}
+                    />
+                    <Legend 
+                      wrapperStyle={{ paddingTop: '15px' }}
+                      iconType="line"
+                      contentStyle={{ color: '#e2e8f0', fontSize: '13px', fontWeight: '500' }}
+                    />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          
+          <div className="pt-4 border-t border-primary-wh40k">
             <div className="text-xs text-secondary-wh40k space-y-1">
               {topPlayer && (
                 <div>Top Performer: <span className="font-medium text-primary-wh40k">{topPlayer.displayName}</span> ({getPerformanceValue(topPlayer) >= 0 ? '+' : ''}{getPerformanceValue(topPlayer).toFixed(1)}%)</div>

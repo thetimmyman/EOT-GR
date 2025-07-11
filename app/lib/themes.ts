@@ -391,6 +391,8 @@ export const guildThemes: Record<string, GuildTheme> = {
   }
 }
 
+export const themes = guildThemes
+
 export function getGuildTheme(guildCode: string): GuildTheme {
   return guildThemes[guildCode] || guildThemes['DEFAULT']
 }

@@ -8,6 +8,18 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, Legend, ComposedChart
 } from './RechartsWrapper'
+import { formatBossName } from '../lib/themeUtils'
+
+// Helper function to format damage values
+const formatDamageK = (damage: number): string => {
+  const k = damage / 1000
+  if (k >= 1000) {
+    const formatted = (k / 1000).toFixed(2)
+    // Add comma if needed (e.g., 1,234.56M)
+    return formatted.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + 'M'
+  }
+  return k.toFixed(0) + 'K'
+}
 
 interface BossPerformancePageProps {
   selectedGuild: string
@@ -27,6 +39,7 @@ interface PlayerBossStats {
 interface PrimeStats {
   displayName: string
   avgDamage: number
+  totalDamage: number
   tokenCount: number
   maxHit: number
   bossName?: string
@@ -103,7 +116,6 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
             .eq('damageType', DAMAGE_TYPES.BATTLE)
             .eq('rarity', RARITIES.LEGENDARY)
             .gte('tier', TIER_THRESHOLDS.MIN_BOSS_TIER)
-            .neq('remainingHp', 0)
             .gt('damageDealt', 0)
 
           if (error) {
@@ -222,10 +234,22 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
         .map(([player, data]) => ({
           displayName: player,
           avgDamage: data.hits.length > 0 ? data.totalDamage / data.hits.length : 0,
+          totalDamage: data.totalDamage,
           maxHit: data.hits.length > 0 ? Math.max(...data.hits) : 0,
           tokenCount: data.tokenCount
         }))
-        .sort((a, b) => b.tokenCount - a.tokenCount) // Sort by token count
+        .sort((a, b) => {
+          // Sort by total damage first (highest first)
+          if (b.totalDamage !== a.totalDamage) {
+            return b.totalDamage - a.totalDamage
+          }
+          // Tiebreaker: token count (highest first)
+          if (b.tokenCount !== a.tokenCount) {
+            return b.tokenCount - a.tokenCount
+          }
+          // Final tiebreaker: alphabetical by name (for consistency)
+          return a.displayName.localeCompare(b.displayName)
+        })
 
       setPrimeStats(primeResults)
       
@@ -237,11 +261,23 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
             .map(([player, data]) => ({
               displayName: player,
               avgDamage: data.hits.length > 0 ? data.totalDamage / data.hits.length : 0,
+              totalDamage: data.totalDamage,
               tokenCount: data.tokenCount,
               maxHit: data.hits.length > 0 ? Math.max(...data.hits) : 0,
               bossName
             }))
-            .sort((a, b) => b.avgDamage - a.avgDamage)
+            .sort((a, b) => {
+              // Sort by average damage first (highest first)
+              if (b.avgDamage !== a.avgDamage) {
+                return b.avgDamage - a.avgDamage
+              }
+              // Tiebreaker: token count (highest first)
+              if (b.tokenCount !== a.tokenCount) {
+                return b.tokenCount - a.tokenCount
+              }
+              // Final tiebreaker: alphabetical by name (for consistency)
+              return a.displayName.localeCompare(b.displayName)
+            })
         }))
         .filter(boss => boss.playerStats.length > 0)
         
@@ -276,9 +312,9 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
       // Calculate top stats - sort by total damage, not average
       const topTotalDamagePlayer = playerBossResults.length > 0 ? 
         [...playerBossResults].sort((a, b) => b.totalDamage - a.totalDamage)[0] : null
-      const biggestHitEntry = [...bossData, ...primeData].reduce((max, entry) => 
+      const biggestHitEntry = bossData.reduce((max, entry) => 
         (entry.damageDealt || 0) > (max.damageDealt || 0) ? entry : max
-      )
+      , { damageDealt: 0, displayName: '' })
 
       const overallAvgDamage = allData.length > 0 ? 
         allData.reduce((sum, d) => sum + (d.damageDealt || 0), 0) / allData.length : 0
@@ -322,7 +358,7 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
           <div className="flex items-center justify-between relative">
             <div className="heraldry-display">⚔️</div>
             <h1 className="heading-wh40k text-2xl">
-              Level {level} - {bossName} Battle Analysis
+              L{level} {bossName} Battle Analysis
             </h1>
             <div className="text-right">
               <div className="text-sm text-secondary-wh40k">Campaign {selectedSeason} • {selectedGuild}</div>
@@ -370,19 +406,18 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
                   return (
                     <div key={player.displayName} className="flex items-center gap-2">
                       <span className="text-xs text-slate-400 w-4">#{index + 1}</span>
-                      <div className="flex-1">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-xs font-medium text-slate-300">{player.displayName}</span>
-                          <div className="text-right">
-                            <span className="text-xs font-mono text-blue-400">{(player.avgDamage / 1000).toFixed(0)}K</span>
-                            <div className="text-xs text-slate-400">Max: {(player.maxHit / 1000000).toFixed(1)}M</div>
-                          </div>
-                        </div>
-                        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                      <span className="text-xs font-medium text-slate-300 w-20 truncate">{player.displayName}</span>
+                      <div className="flex-1 flex items-center gap-2">
+                        <div className="flex-1 bg-slate-700 rounded-full h-2 overflow-hidden">
                           <div 
                             className="h-full bg-gradient-to-r from-blue-500 to-blue-400 transition-all duration-500"
                             style={{ width: `${barWidth}%` }}
                           />
+                        </div>
+                        <div className="text-right text-xs">
+                          <span className="font-mono text-blue-400">AVG: {formatDamageK(player.avgDamage)}</span>
+                          <span className="mx-1 text-slate-400">•</span>
+                          <span className="text-slate-400">Max: {formatDamageK(player.maxHit)}</span>
                         </div>
                       </div>
                     </div>
@@ -410,16 +445,16 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
                   return (
                     <div key={player.displayName} className="flex items-center gap-2">
                       <span className="text-xs text-slate-400 w-4">#{index + 1}</span>
-                      <div className="flex-1">
-                        <div className="flex justify-between items-center mb-1">
-                          <span className="text-xs font-medium text-slate-300">{player.displayName}</span>
-                          <span className="text-xs font-mono text-green-400">{(player.totalDamage / 1000000).toFixed(1)}M</span>
-                        </div>
-                        <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
+                      <span className="text-xs font-medium text-slate-300 w-20 truncate">{player.displayName}</span>
+                      <div className="flex-1 flex items-center gap-2">
+                        <div className="flex-1 bg-slate-700 rounded-full h-2 overflow-hidden">
                           <div 
                             className="h-full bg-gradient-to-r from-green-500 to-green-400 transition-all duration-500"
                             style={{ width: `${barWidth}%` }}
                           />
+                        </div>
+                        <div className="text-right text-xs">
+                          <span className="font-mono text-green-400">Total Damage: {formatDamageK(player.totalDamage)}</span>
                         </div>
                       </div>
                     </div>
@@ -481,7 +516,7 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {primeBossStats.map((primeBoss, bossIndex) => (
               <div key={primeBoss.bossName} className="card-wh40k p-4">
-                <h3 className="subheading-wh40k text-purple-400">{primeBoss.bossName} Performance</h3>
+                <h3 className="subheading-wh40k text-purple-400">L{level} {primeBoss.bossName} Performance</h3>
                 <div className="space-y-2 max-h-64 overflow-y-auto">
                   {primeBoss.playerStats
                     .slice(0, 10) // Show top 10 players
@@ -495,9 +530,9 @@ export default function BossPerformancePage({ selectedGuild, selectedSeason, lev
                           <div className="flex-1">
                             <div className="flex justify-between items-center mb-1">
                               <span className="text-xs font-medium text-slate-300">{player.displayName}</span>
-                              <div className="text-right flex items-center gap-2">
-                                <span className="text-xs font-mono text-purple-400">{(player.avgDamage / 1000).toFixed(0)}K</span>
-                                <span className="text-xs text-slate-400">({player.tokenCount}t)</span>
+                              <div className="text-right text-center">
+                                <div className="text-xs font-mono text-purple-400">{formatDamageK(player.avgDamage)}</div>
+                                <div className="text-xs text-slate-400">({player.tokenCount} tokens)</div>
                               </div>
                             </div>
                             <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">

@@ -63,7 +63,7 @@ export default function TokenUsagePage({ selectedGuild, selectedSeason }: TokenU
       
       const { data: historicalData } = await supabase
         .from('EOT_GR_data')
-        .select('displayName, Season, damageType')
+        .select('displayName, Season, damageType, rarity, tier')
         .eq('Guild', selectedGuild)
         .eq('damageType', 'Battle')
         .eq('rarity', 'Legendary')     
@@ -139,8 +139,9 @@ export default function TokenUsagePage({ selectedGuild, selectedSeason }: TokenU
         const playerHistoricalAvgs: {[player: string]: number} = {}
         Object.entries(historicalStats).forEach(([player, seasons]) => {
           const seasonsPlayed = Object.keys(seasons)
+          const totalTokens = Object.values(seasons).reduce((sum, tokens) => sum + tokens, 0)
+          
           if (seasonsPlayed.length === 5) { // Only if participated in all 5 seasons
-            const totalTokens = Object.values(seasons).reduce((sum, tokens) => sum + tokens, 0)
             playerHistoricalAvgs[player] = totalTokens / 5
           }
         })
@@ -351,8 +352,6 @@ export default function TokenUsagePage({ selectedGuild, selectedSeason }: TokenU
               .map((player, index) => {
                 const maxHistorical = Math.max(...playersWithHistorical.map(p => p.historicalAvg || 0))
                 const barHeight = ((player.historicalAvg || 0) / maxHistorical) * 100
-                const currentVsHistorical = player.historicalAvg ? 
-                  ((player.totalTokens / player.historicalAvg) - 1) * 100 : 0
                 
                 return (
                   <div key={player.displayName} className="flex-shrink-0 text-center" style={{ width: '60px' }}>
@@ -370,11 +369,6 @@ export default function TokenUsagePage({ selectedGuild, selectedSeason }: TokenU
                       </div>
                       <div className="text-slate-400" style={{ fontSize: '10px' }}>
                         Now: {player.totalTokens}
-                        {currentVsHistorical !== 0 && (
-                          <span className="ml-1">
-                            ({Math.abs(currentVsHistorical).toFixed(0)}%)
-                          </span>
-                        )}
                       </div>
                     </div>
                   </div>

@@ -3,6 +3,10 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 import { addCalculatedFields, addPowerBIIndexing, CalculatedData } from '../lib/calculations'
+import { 
+  ResponsiveContainer, Radar, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Legend
+} from './RechartsWrapper'
+import { formatBossName } from '../lib/themeUtils'
 
 interface PlayerSearchPageProps {
   selectedGuild: string
@@ -18,8 +22,9 @@ interface PlayerStats {
   vsGuildAvg: number
   weightedContribution: number
   bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}}
-  primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}}
+  primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number, set?: number}}
   historicalTokens: {[key: string]: number}
+  radarData: Array<{boss: string, playerAvg: number, guildAvg: number}>
 }
 
 export default function PlayerSearchPage({ selectedGuild, selectedSeason }: PlayerSearchPageProps) {
@@ -125,10 +130,10 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         return
       }
 
-      // Get historical data for past 5 seasons
+      // Get historical data for past 5 completed seasons (excluding current)
       const currentSeasonNum = parseInt(selectedSeason)
       const pastSeasons = []
-      for (let i = 0; i < 5; i++) {
+      for (let i = 1; i <= 5; i++) {
         pastSeasons.push((currentSeasonNum - i).toString())
       }
 
@@ -259,12 +264,17 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       // Calculate player stats from properly filtered data
       const bombData = allPlayerData.filter(d => d.damageType === 'Bomb')
       
+      // Token calculation should match TokenUsagePage: include ALL battle data (including last hits)
+      const allPlayerBattleData = calculatedPlayerData.filter(d => 
+        d.damageType === 'Battle' && d.tier >= 4 && d.rarity === 'Legendary'
+      )
+      
       const totalBattleDamage = filteredPlayerBattleData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const totalBombDamage = bombData.reduce((sum, d) => sum + (d.damageDealt || 0), 0)
       const totalDamage = totalBattleDamage + totalBombDamage
-      const tokensUsed = filteredPlayerBattleData.length
+      const tokensUsed = allPlayerBattleData.length  // FIXED: Use all battle data like TokenUsagePage
       const bombsUsed = bombData.length
-      const avgDamagePerHit = tokensUsed > 0 ? totalBattleDamage / tokensUsed : 0  // Only battle damage for average
+      const avgDamagePerHit = filteredPlayerBattleData.length > 0 ? totalBattleDamage / filteredPlayerBattleData.length : 0  // Only battle damage for average (excluding last hits)
       const totalWeightedContribution = filteredPlayerBattleData.reduce((sum, d) => sum + (d.WeightedContribution || 0), 0)
       const avgWeightedContribution = tokensUsed > 0 ? totalWeightedContribution / tokensUsed : 0
 
@@ -272,7 +282,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       // Boss and Prime stats with proper comparisons
       const bossStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}} = {}
-      const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number}} = {}
+      const primeStats: {[key: string]: {damage: number, tokens: number, avgDamage: number, biggestHit: number, vsClusterAvg: number, vsGuildAvg: number, weightedContribution: number, set?: number}} = {}
       
       filteredPlayerBattleData.forEach(d => {
         const bossName = d.Name || 'Unknown'
@@ -287,7 +297,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
           bossStats[bossName].weightedContribution += d.WeightedContribution || 0
         } else {
           if (!primeStats[bossName]) {
-            primeStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0, weightedContribution: 0 }
+            primeStats[bossName] = { damage: 0, tokens: 0, avgDamage: 0, biggestHit: 0, vsClusterAvg: 0, vsGuildAvg: 0, weightedContribution: 0, set: typeof d.set === 'number' ? d.set : parseInt(d.set) || 0 }
           }
           primeStats[bossName].damage += d.damageDealt || 0
           primeStats[bossName].tokens += 1
@@ -383,6 +393,30 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       console.log('Final performance vs averages:', { vsClusterAvg, vsGuildAvg })
 
+      // Prepare radar chart data (Player vs Guild Average for each boss)
+      const radarData: Array<{boss: string, playerAvg: number, guildAvg: number}> = []
+      
+      Object.keys(bossStats).forEach(boss => {
+        const playerStats = bossStats[boss]
+        // Find the guild average for this boss
+        const playerBossData = filteredPlayerBattleData.filter(d => d.Name === boss && d.encounterId === 0)
+        const mostCommonRank = playerBossData.length > 0 ? 
+          playerBossData[0].overallTokenUseage : 
+          boss
+        const comparisonKey = `${boss}_${mostCommonRank}`
+        const guildBossAvg = guildBossAverages[comparisonKey] || 0
+        
+        if (guildBossAvg > 0) {
+          // Get the set number for boss level formatting
+          const setNumber = playerBossData.length > 0 ? Number(playerBossData[0].set) || 0 : 0
+          radarData.push({
+            boss: formatBossName(boss, setNumber),
+            playerAvg: Math.round(playerStats.avgDamage / 1000), // Convert to K for readability
+            guildAvg: Math.round(guildBossAvg / 1000) // Convert to K for readability
+          })
+        }
+      })
+
       const finalStats = {
         totalDamage,
         avgDamagePerHit,
@@ -393,7 +427,8 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
         weightedContribution: avgWeightedContribution,
         bossStats,
         primeStats,
-        historicalTokens
+        historicalTokens,
+        radarData
       }
 
       console.log('Final stats:', finalStats)
@@ -427,7 +462,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
   }
 
   return (
-    <div className="container-modern py-8 space-y-8 animate-fade-in">
+    <div className="container-modern py-4 space-y-4 animate-fade-in">
       {/* Header */}
       <div className="text-center">
         <h2 className="text-3xl font-bold text-gradient mb-3">
@@ -439,7 +474,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
       </div>
 
       {/* Player Search */}
-      <div className="card-modern p-6 hover-lift">
+      <div className="card-modern p-5 hover-lift">
         <label htmlFor="player-search-input" className="block text-sm font-semibold text-secondary mb-3">
           🔍 Search Player
         </label>
@@ -488,10 +523,10 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
       {/* Player Stats */}
       {playerStats && !loading && (
-        <div className="space-y-8 animate-slide-up">
+        <div className="space-y-4 animate-slide-up">
           {/* Overview Stats */}
-          <div className="card-elevated p-8">
-            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
+          <div className="card-elevated p-5">
+            <h3 className="text-xl font-bold text-primary mb-3 flex items-center">
               📊 Season Overview
             </h3>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -528,12 +563,29 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
             </div>
           </div>
 
+          {/* Historical Activity */}
+          <div className="card-elevated p-5">
+            <h3 className="text-xl font-bold text-primary mb-3 flex items-center">
+              📅 Historical Token Usage (Past 5 Completed Seasons)
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+              {Object.entries(playerStats.historicalTokens)
+                .sort(([a], [b]) => b.localeCompare(a))
+                .map(([season, tokens]) => (
+                  <div key={season} className="text-center p-4 card-modern hover-lift">
+                    <div className="text-2xl font-bold accent-cyan mb-2">{tokens}</div>
+                    <div className="text-sm font-medium text-secondary">Season {season}</div>
+                  </div>
+                ))}
+            </div>
+          </div>
+
           {/* Performance Comparison */}
-          <div className="card-elevated p-8">
-            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
+          <div className="card-elevated p-5">
+            <h3 className="text-xl font-bold text-primary mb-3 flex items-center">
               📈 Performance vs Averages
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
               <div className="p-3 card-modern hover-lift">
                 <div className="flex items-center mb-2">
                   <span className="text-sm font-semibold text-secondary flex-1">vs Cluster Average</span>
@@ -562,30 +614,59 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                 </div>
               </div>
             </div>
-          </div>
-
-          {/* Historical Activity */}
-          <div className="card-elevated p-8">
-            <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-              📅 Historical Token Usage (Past 5 Seasons)
-            </h3>
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-              {Object.entries(playerStats.historicalTokens)
-                .sort(([a], [b]) => b.localeCompare(a))
-                .map(([season, tokens]) => (
-                  <div key={season} className="text-center p-4 card-modern hover-lift">
-                    <div className="text-2xl font-bold accent-cyan mb-2">{tokens}</div>
-                    <div className="text-sm font-medium text-secondary">Season {season}</div>
-                  </div>
-                ))}
-            </div>
+            
+            {/* Radar Chart: Player vs Guild Averages per Boss */}
+            {playerStats.radarData && playerStats.radarData.length > 0 && (
+              <div className="bg-slate-900/50 rounded-lg p-2 mt-2">
+                <ResponsiveContainer width="100%" height={320}>
+                  <RadarChart data={playerStats.radarData} margin={{ top: 10, right: 40, bottom: 10, left: 40 }}>
+                    <PolarGrid stroke="#475569" gridType="polygon" radialLines={true} />
+                    <PolarAngleAxis 
+                      dataKey="boss" 
+                      tick={{ fontSize: 11, fill: '#cbd5e1' }}
+                      className="text-slate-300"
+                    />
+                    <PolarRadiusAxis 
+                      tick={{ fontSize: 9, fill: '#94a3b8' }} 
+                      tickCount={8}
+                      domain={[0, 'dataMax']}
+                      angle={0}
+                      tickFormatter={(value: number) => `${Math.round(value)}K`}
+                    />
+                    <Radar
+                      name="Player Average"
+                      dataKey="playerAvg"
+                      stroke="#10B981"
+                      fill="#10B981"
+                      fillOpacity={0.4}
+                      strokeWidth={3}
+                      dot={{ r: 5, fill: '#10B981', strokeWidth: 2, stroke: '#ffffff' }}
+                    />
+                    <Radar
+                      name="Guild Average"
+                      dataKey="guildAvg"
+                      stroke="#F59E0B"
+                      fill="#F59E0B"
+                      fillOpacity={0.15}
+                      strokeWidth={2}
+                      strokeDasharray="8 4"
+                      dot={{ r: 4, fill: '#F59E0B', strokeWidth: 1, stroke: '#ffffff' }}
+                    />
+                    <Legend 
+                      wrapperStyle={{ paddingTop: '10px', fontSize: '12px' }}
+                      iconType="rect"
+                    />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </div>
 
           {/* Boss Performance */}
           {Object.keys(playerStats.bossStats).length > 0 && (
-            <div className="card-elevated p-8">
-              <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-                ⚔️ Boss Performance (Main Bosses)
+            <div className="card-elevated p-5">
+              <h3 className="text-xl font-bold text-primary mb-3 flex items-center">
+                ⚔️ Boss Performance
               </h3>
               <div className="space-y-2">
                 {Object.entries(playerStats.bossStats)
@@ -604,19 +685,19 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                         </div>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-secondary">
-                        <div>
-                          <div className="font-medium">Biggest Hit:</div>
+                        <div className="text-center">
+                          <div className="font-medium">Biggest Hit</div>
                           <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
                         </div>
-                        <div>
-                          <div className="font-medium">vs Cluster Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsClusterAvg)} text-center`}>
+                        <div className="text-center">
+                          <div className="font-medium">vs Cluster Avg</div>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
                             {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
                           </div>
                         </div>
-                        <div>
-                          <div className="font-medium">vs Guild Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsGuildAvg)} text-center`}>
+                        <div className="text-center">
+                          <div className="font-medium">vs Guild Avg</div>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
                             {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
                           </div>
                         </div>
@@ -632,9 +713,9 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
 
           {/* Prime Performance */}
           {Object.keys(playerStats.primeStats).length > 0 && (
-            <div className="card-elevated p-8">
-              <h3 className="text-xl font-bold text-primary mb-6 flex items-center">
-                🎯 Prime Performance (Side Bosses)
+            <div className="card-elevated p-5">
+              <h3 className="text-xl font-bold text-primary mb-3 flex items-center">
+                🎯 Prime Performance
               </h3>
               <div className="space-y-2">
                 {Object.entries(playerStats.primeStats)
@@ -642,7 +723,7 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                   .map(([boss, stats]) => (
                     <div key={boss} className="p-3 card-modern hover-lift">
                       <div className="flex justify-between items-center mb-2">
-                        <span className="text-sm font-semibold text-primary">{boss} (Prime)</span>
+                        <span className="text-sm font-semibold text-primary">L{(stats.set ?? 0) + 1} {boss}</span>
                         <div className="flex items-center space-x-3">
                           <span className="text-xs text-secondary">
                             {stats.tokens}t
@@ -653,19 +734,19 @@ export default function PlayerSearchPage({ selectedGuild, selectedSeason }: Play
                         </div>
                       </div>
                       <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs text-secondary">
-                        <div>
-                          <div className="font-medium">Biggest Hit:</div>
+                        <div className="text-center">
+                          <div className="font-medium">Biggest Hit</div>
                           <div className="accent-red">{(stats.biggestHit / 1000000).toFixed(2)}M</div>
                         </div>
-                        <div>
-                          <div className="font-medium">vs Cluster Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsClusterAvg)} text-center`}>
+                        <div className="text-center">
+                          <div className="font-medium">vs Cluster AVG</div>
+                          <div className={`${getPerformanceColor(stats.vsClusterAvg)}`}>
                             {stats.vsClusterAvg > 0 ? '+' : ''}{stats.vsClusterAvg.toFixed(1)}%
                           </div>
                         </div>
-                        <div>
-                          <div className="font-medium">vs Guild Avg:</div>
-                          <div className={`${getPerformanceColor(stats.vsGuildAvg)} text-center`}>
+                        <div className="text-center">
+                          <div className="font-medium">vs Guild AVG</div>
+                          <div className={`${getPerformanceColor(stats.vsGuildAvg)}`}>
                             {stats.vsGuildAvg > 0 ? '+' : ''}{stats.vsGuildAvg.toFixed(1)}%
                           </div>
                         </div>
